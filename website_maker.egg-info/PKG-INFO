@@ -1,0 +1,22 @@
+Metadata-Version: 2.4
+Name: website-maker
+Version: 0.1.0
+Summary: Telegram bot that builds and hosts websites for small businesses
+Requires-Python: >=3.11
+Requires-Dist: fastapi>=0.115
+Requires-Dist: uvicorn[standard]>=0.32
+Requires-Dist: aiogram>=3.15
+Requires-Dist: sqlalchemy[asyncio]>=2.0
+Requires-Dist: asyncpg>=0.30
+Requires-Dist: alembic>=1.14
+Requires-Dist: pydantic-settings>=2.6
+Requires-Dist: redis>=5.2
+Requires-Dist: python-slugify>=8.0
+Requires-Dist: httpx>=0.27
+Provides-Extra: worker
+Requires-Dist: arq>=0.26; extra == "worker"
+Requires-Dist: anthropic>=0.40; extra == "worker"
+Requires-Dist: playwright>=1.48; extra == "worker"
+Provides-Extra: dev
+Requires-Dist: pytest>=8.3; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.24; extra == "dev"

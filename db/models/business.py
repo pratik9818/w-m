@@ -1,0 +1,45 @@
+import uuid
+from datetime import datetime
+
+from sqlalchemy import BigInteger, DateTime, ForeignKey, String, Text, func
+from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from db.base import Base
+
+
+class Business(Base):
+    __tablename__ = "businesses"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    owner_telegram_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    slug: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    category: Mapped[str] = mapped_column(String(40), nullable=False)
+    tagline: Mapped[str | None] = mapped_column(String(120))
+    about: Mapped[str | None] = mapped_column(Text)
+    theme: Mapped[str] = mapped_column(String(20), nullable=False, default="classic")
+    phone: Mapped[str | None] = mapped_column(String(40))
+    email: Mapped[str | None] = mapped_column(String(120))
+    address: Mapped[str | None] = mapped_column(Text)
+    hours: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    social_links: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    generation_status: Mapped[str] = mapped_column(String(20), nullable=False, default="none")
+    current_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("site_versions.id", use_alter=True)
+    )
+    deployment_url: Mapped[str | None] = mapped_column(String(255))
+    vercel_project_id: Mapped[str | None] = mapped_column(String(120))
+    plan: Mapped[str] = mapped_column(String(20), nullable=False, default="free")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    services: Mapped[list["Service"]] = relationship(
+        back_populates="business", cascade="all, delete-orphan", order_by="Service.sort_order"
+    )
+    media: Mapped[list["Media"]] = relationship(
+        back_populates="business", cascade="all, delete-orphan", order_by="Media.sort_order"
+    )
