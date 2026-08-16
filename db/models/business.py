@@ -30,7 +30,7 @@ class Business(Base):
         UUID(as_uuid=True), ForeignKey("site_versions.id", use_alter=True)
     )
     deployment_url: Mapped[str | None] = mapped_column(String(255))
-    vercel_project_id: Mapped[str | None] = mapped_column(String(120))
+    cf_pages_project_name: Mapped[str | None] = mapped_column(String(120))
     plan: Mapped[str] = mapped_column(String(20), nullable=False, default="free")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

@@ -1,4 +1,3 @@
-import re
 import uuid
 
 from aiogram import F, Router
@@ -15,14 +14,14 @@ from bot_api.bot.keyboards import (
 )
 from bot_api.bot.states.onboarding import MAX_PHOTOS, MAX_SERVICES, OnboardingStates
 from bot_api.services.business_service import OnboardingSpec, create_business_from_spec
+from bot_api.services.queue import enqueue_generation
 from bot_api.services.redis_client import get_redis
 from bot_api.services.session import set_active_business
 from bot_api.services.storage import UploadRejected, upload_media
+from bot_api.services.validation import EMAIL_RE
 from db.base import session_scope
 
 router = Router(name="onboarding")
-
-EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 async def begin_onboarding(message: Message, state: FSMContext) -> None:
@@ -372,11 +371,11 @@ async def on_confirm(callback: CallbackQuery, state: FSMContext) -> None:
         business = await create_business_from_spec(session, callback.from_user.id, spec)
 
     await set_active_business(get_redis(), callback.from_user.id, business.id)
+    await enqueue_generation(business.id, trigger="create")
     await state.clear()
 
     await callback.message.answer(
         f"🎉 <b>{business.name}</b> is queued for building! "
-        "I'll message you here with the live link as soon as it's ready.\n\n"
-        "(Generation isn't wired up yet in this build — that's next.)"
+        "I'll message you here with the live link as soon as it's ready."
     )
     await callback.answer()

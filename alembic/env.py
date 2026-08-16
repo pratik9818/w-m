@@ -41,10 +41,14 @@ def do_run_migrations(connection: Connection) -> None:
 
 
 async def run_migrations_online() -> None:
+    # statement_cache_size=0: required against Supabase's Supavisor pgbouncer
+    # transaction-mode pooler, same as db/base.py's engine -- prepared statements
+    # don't survive across pooled connections otherwise.
     connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args={"statement_cache_size": 0},
     )
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)

@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     supabase_service_key: str = ""
 
     anthropic_api_key: str = ""
+    gemini_api_key: str = ""
+    daytona_api_key: str = ""
+    cloudflare_api_token: str = ""
+    cloudflare_account_id: str = ""
 
     base_domain: str = ""
 

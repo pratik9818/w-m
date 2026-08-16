@@ -16,7 +16,14 @@ _session_factory = None
 
 def init_engine(database_url: str) -> None:
     global _engine, _session_factory
-    _engine = create_async_engine(database_url, pool_pre_ping=True)
+    # statement_cache_size=0: required when the target is a pgbouncer transaction-mode
+    # pooler (e.g. Supabase's Supavisor) — server-side prepared statements don't survive
+    # across pooled connections and cause random "prepared statement does not exist" errors.
+    _engine = create_async_engine(
+        database_url,
+        pool_pre_ping=True,
+        connect_args={"statement_cache_size": 0},
+    )
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
 
 

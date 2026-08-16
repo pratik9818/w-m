@@ -35,7 +35,7 @@ CREATE TABLE businesses (
   generation_status   text NOT NULL DEFAULT 'none',       -- 'none' | 'queued' | 'generating' | 'testing' | 'deploying' | 'live' | 'failed'
   current_version_id  uuid REFERENCES site_versions(id),
   deployment_url      text,
-  vercel_project_id   text,
+  cf_pages_project_name text,
   plan                text NOT NULL DEFAULT 'free',       -- reserved for future billing phase
   created_at          timestamptz NOT NULL DEFAULT now(),
   updated_at          timestamptz NOT NULL DEFAULT now()
@@ -83,6 +83,17 @@ CREATE TABLE edit_log (
   created_at            timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX idx_edit_log_business ON edit_log(business_id);
+
+CREATE TABLE token_usage (
+  id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_telegram_id  bigint NOT NULL,
+  business_id        uuid REFERENCES businesses(id) ON DELETE SET NULL,
+  model              text NOT NULL,
+  input_tokens       int NOT NULL,
+  output_tokens      int NOT NULL,
+  created_at         timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_token_usage_owner ON token_usage(owner_telegram_id);
 
 -- Storage: create a public-read bucket named `business-media` via the Supabase
 -- dashboard (Storage -> New bucket -> Public bucket) for logos/photos.
