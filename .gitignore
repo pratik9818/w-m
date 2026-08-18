@@ -1,0 +1,36 @@
+# Secrets -- .env holds live Telegram, Supabase, Redis, OpenRouter, Daytona and
+# Cloudflare credentials. Never commit it; .env.example documents the shape instead.
+.env
+.env.local
+*.pem
+*.key
+
+# Virtualenv / packaging
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+
+# Python bytecode & tooling caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local run logs from the worker and bot polling
+*.log
+
+# Generated site output -- rebuilt on demand, and every version is already stored in
+# the database and on Cloudflare Pages
+generated_output/
+
+# Machine-specific Claude Code tool permissions -- local settings, not project config
+.claude/settings.local.json
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
