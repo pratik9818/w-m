@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import TokenUsage
 
-FREE_TIER_TOKEN_LIMIT = 300_000
+FREE_TIER_TOKEN_LIMIT = 1_000_000
 
 
 class QuotaExceeded(Exception):
@@ -59,11 +59,12 @@ KIND_LABELS = {
     "rebuild": "rebuilding sites from scratch",
     "edit": "making changes",
     "parse": "understanding your messages",
+    "repair": "fixing small problems before publishing",
 }
 
 
 async def get_quota_summary(session: AsyncSession, owner_telegram_id: int) -> dict:
-    """Everything /quota needs, in one round trip per figure.
+    """Everything /token needs, in one round trip per figure.
 
     Reports requests alongside tokens deliberately: tokens are the budget we set, but the
     provider caps *requests* per day, so a report showing only tokens can say "plenty

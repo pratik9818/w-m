@@ -15,7 +15,9 @@ from bot_api.services.openrouter_client import (
     OpenRouterCallFailed,
     call_plain_completion,
 )
+from bot_api.logging_config import log_event
 from db.models import Business
+from worker.codegen import shell, validate
 from worker.codegen.quota import check_quota, record_usage
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"
@@ -52,7 +54,15 @@ BROKEN_LINK_RE = re.compile(
     r"""<a\b[^>]*\bhref\s*=\s*["'](?:\s*|#|mailto:\s*|tel:\s*)["'][^>]*>(?P<text>.*?)</a\s*>""",
     re.IGNORECASE | re.DOTALL,
 )
+SCRIPT_EL_RE = re.compile(r"<script\b[^>]*>.*?</script\s*>|<script\b[^>]*/?>", re.IGNORECASE | re.DOTALL)
+EMPTY_IMG_RE = re.compile(r"""<img\b[^>]*\bsrc\s*=\s*["']\s*["'][^>]*/?>""", re.IGNORECASE)
 CSS_CLASS_RE = re.compile(r"\.(-?[_a-zA-Z][\w-]*)")
+PAGE_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+PAGE_DESC_RE = re.compile(
+    r"""<meta[^>]*name\s*=\s*["']description["'][^>]*content\s*=\s*["'](.*?)["']""",
+    re.IGNORECASE | re.DOTALL,
+)
+PAGE_MAIN_RE = re.compile(r"<main\b.*?</main\s*>", re.IGNORECASE | re.DOTALL)
 # A patch may legitimately reword or delete an element ("remove the heading from the top"),
 # so this is a floor on how much of the page must survive, not a ban on change. 0.75 sits
 # well clear of both sides of the measured gap (legitimate edits >=0.956, wholesale <=0.633).
@@ -81,8 +91,24 @@ CONTRACT_CLASSES = frozenset({
 MAX_UNSTYLED_CLASSES = 12
 
 STYLESHEET_FILE = "style.css"
-PAGE_FILES = ("index.html", "about.html", "services.html", "contact.html")
-REQUIRED_FILES = (*PAGE_FILES, STYLESHEET_FILE)
+MULTIPAGE_FILES = ("index.html", "about.html", "services.html", "contact.html")
+LANDING_FILES = ("index.html",)
+# Kept for callers that just want the widest possible set (e.g. patch target validation).
+PAGE_FILES = MULTIPAGE_FILES
+REQUIRED_FILES = (*MULTIPAGE_FILES, STYLESHEET_FILE)
+
+
+def page_files_for(layout: str | None) -> tuple[str, ...]:
+    return LANDING_FILES if layout == "landing" else MULTIPAGE_FILES
+
+
+def required_files_for(layout: str | None) -> tuple[str, ...]:
+    return (*page_files_for(layout), STYLESHEET_FILE)
+
+
+def page_groups_for(layout: str | None) -> tuple[tuple[str, ...], ...]:
+    """A landing page is one call; four pages are split into two concurrent calls."""
+    return (LANDING_FILES,) if layout == "landing" else PAGE_GROUPS
 
 # The four pages are independent of one another -- they only have to agree on the class
 # contract in prompts/_shared.md -- so they are generated concurrently rather than in one
@@ -94,6 +120,29 @@ REQUIRED_FILES = (*PAGE_FILES, STYLESHEET_FILE)
 PAGE_GROUPS = (
     ("index.html", "about.html"),
     ("services.html", "contact.html"),
+)
+
+LANDING_REQUIREMENTS = (
+    "**index.html** — the entire site, as one scrolling landing page.\n"
+    "  Every section below goes on this single page, in this order. Each of the four "
+    "anchor sections MUST carry the exact `id` given, because the site menu scrolls to "
+    "them:\n"
+    "  - A `hero` block (no id needed): a strong headline in `hero-title`, a supporting "
+    "`hero-subtitle`, and a `btn btn-primary` link to `#contact`.\n"
+    "  - `<section class=\"section\" id=\"about\">` — 3-4 substantial paragraphs on what "
+    "the business does, who it serves, and how it works with customers.\n"
+    "  - `<section class=\"section section-alt\" id=\"services\">` — what the business "
+    "offers, as a `card-grid`. Use the real services and price labels if the data has "
+    "them; otherwise describe the kind of work in general terms with nothing invented.\n"
+    "  - A 'how it works' process section using `steps`, 3-5 `step` blocks.\n"
+    "  - An FAQ using `faq-list`, 4-6 items, each a `<details class=\"faq-item\">` with "
+    "`<summary class=\"faq-question\">` and `<div class=\"faq-answer\">` so it opens on click.\n"
+    "  - `<section class=\"section\" id=\"contact\">` — a `contact-list` of the real "
+    "contact details only, phone as a `tel:` link and email as a `mailto:` link, plus "
+    "opening hours if real ones are given. Omit anything the data does not provide.\n"
+    "  - A closing `cta-band`.\n"
+    "  - **At least 700 words of real body copy**, since this page is the whole site.\n"
+    "  - Link only to `#about`, `#services`, `#contact` — never to another .html file."
 )
 
 PAGE_REQUIREMENTS = {
@@ -129,9 +178,11 @@ PAGE_REQUIREMENTS = {
         "descriptive terms, with no invented names or prices.\n"
         "  - A 'how it works' process section using `steps`, with 3-5 `step` blocks each "
         "carrying a `step-number`, `step-title` and `step-text`.\n"
-        "  - An FAQ using `faq-list`, with 4-6 `faq-item` blocks. Write questions a real "
-        "customer in this category would ask, and answer them honestly without inventing "
-        "prices, times, or guarantees.\n"
+        "  - An FAQ using `faq-list`, with 4-6 items. Each item MUST be a "
+        "`<details class=\"faq-item\">` containing `<summary class=\"faq-question\">` for the "
+        "question and `<div class=\"faq-answer\">` for the answer, so it opens when clicked "
+        "with no JavaScript. Write questions a real customer in this category would ask, and "
+        "answer them honestly without inventing prices, times, or guarantees.\n"
         "  - A closing `cta-band`."
     ),
     "contact.html": (
@@ -222,6 +273,7 @@ def spec_from_business(business: Business) -> dict:
         "logo_url": logo_url,
         "photo_urls": photo_urls,
         "extra_instructions": _clean(business.extra_instructions),
+        "layout": business.layout,
         # Passed in as data so the footer never reaches for `new Date()` -- a real
         # failure: every generated page carried a `document.write` copyright year, which
         # tripped the sandbox's no_script_tags check and correctly blocked the deploy.
@@ -229,24 +281,62 @@ def spec_from_business(business: Business) -> dict:
     }
 
 
-def _shared_block(spec: dict) -> str:
+# The stylesheet call only needs to know what the site *is* and how it should look -- the
+# services list, opening hours and about text influence page copy, never a CSS rule.
+DESIGN_SPEC_FIELDS = ("name", "category", "theme", "layout", "logo_url", "extra_instructions")
+
+
+def _contract_block(spec: dict, spec_json: str) -> str:
+    """Class contract, technical constraints and theme -- the part both calls need."""
     theme = spec.get("theme") or "classic"
     guidance = THEME_GUIDANCE.get(theme, THEME_GUIDANCE["classic"])
-    spec_json = json.dumps(spec, indent=2, ensure_ascii=False)
-    return Template(_read_prompt("_shared.md")).substitute(
-        theme_guidance=guidance, spec_json=spec_json
-    )
+    contract = Template(_read_prompt("_contract.md")).substitute(theme_guidance=guidance)
+    return f"{contract}\n\n## Business data\n\n```json\n{spec_json}\n```"
 
 
-def _stylesheet_prompt(shared: str) -> str:
+def _stylesheet_prompt(spec: dict) -> str:
+    # Deliberately excludes _content_rules.md (fabrication and copywriting rules, ~1,100
+    # tokens) and the content-bearing spec fields: a stylesheet cannot fabricate a
+    # testimonial or render an opening time, so sending those rules every build was
+    # ~1,500 tokens of instruction the model had no way to act on.
+    design_spec = {k: spec.get(k) for k in DESIGN_SPEC_FIELDS}
+    shared = _contract_block(spec, json.dumps(design_spec, indent=2, ensure_ascii=False))
     return Template(_read_prompt("stylesheet.md")).substitute(shared=shared)
 
 
-def _pages_prompt(shared: str, page_names: tuple[str, ...]) -> str:
+def _pages_prompt(spec: dict, page_names: tuple[str, ...]) -> str:
+    spec_json = json.dumps(spec, indent=2, ensure_ascii=False)
+    shared = _contract_block(spec, spec_json) + "\n\n" + _read_prompt("_content_rules.md")
+    return _render_pages_prompt(shared, page_names, spec.get("layout"))
+
+
+def _assemble_page(spec: dict, filename: str, fragment: str) -> str:
+    """Turn a model-written fragment (title, description, <main>) into a full page."""
+    title = PAGE_TITLE_RE.search(fragment)
+    desc = PAGE_DESC_RE.search(fragment)
+    main = PAGE_MAIN_RE.search(fragment)
+    if main is None:
+        raise GenerationFailed(f"{filename}: response contained no <main> block")
+    return shell.render_page(
+        spec,
+        filename,
+        title.group(1).strip() if title else str(spec.get("name") or "Website"),
+        desc.group(1).strip() if desc else (spec.get("tagline") or ""),
+        main.group(0),
+    )
+
+
+def _render_pages_prompt(
+    shared: str, page_names: tuple[str, ...], layout: str | None = None
+) -> str:
     output_format = "\n".join(
-        f"===FILE: {name}===\n<the complete {name} document>" for name in page_names
+        f"===FILE: {name}===\n<the title, description and main block for {name}>"
+        for name in page_names
     ) + "\n===END==="
-    requirements = "\n\n".join(PAGE_REQUIREMENTS[name] for name in page_names)
+    if layout == "landing":
+        requirements = LANDING_REQUIREMENTS
+    else:
+        requirements = "\n\n".join(PAGE_REQUIREMENTS[name] for name in page_names)
     return Template(_read_prompt("pages.md")).substitute(
         shared=shared,
         page_names=" and ".join(page_names),
@@ -266,16 +356,29 @@ def _undefined_classes(files: dict[str, str]) -> list[str]:
     return sorted(used - defined)
 
 
-def _strip_broken_links(html: str) -> str:
-    """Unwrap anchors whose href is empty or scheme-only, keeping their visible text.
+def _sanitize_html(html: str) -> str:
+    """Remove output the contract already forbids, rather than merely reporting it.
 
-    The prompt forbids these in two separate places and the models still emit them
-    whenever a business has no phone or email -- it cost one real deploy tonight
-    (`find-dog`, an empty `mailto:` failing contact_links_valid) and another earlier in
-    the session. A prompt rule that has now been ignored twice is not a control; doing it
-    deterministically here is. Keeps the text so no content is lost, just the dead link.
+    Every defect handled here caused a real failed build: three separate deploys died on
+    an empty `mailto:` at 6/7 and 7/8 checks, and a `document.write` copyright year blocked
+    another. Each had a prompt rule forbidding it, in two files, and the models emitted it
+    anyway. Removal is safe precisely because these are things the site is never allowed to
+    contain -- so nothing legitimate can be lost.
     """
-    return BROKEN_LINK_RE.sub(lambda m: m.group("text"), html)
+    # Dead links: keep the visible text, drop the anchor.
+    html = BROKEN_LINK_RE.sub(lambda m: m.group("text"), html)
+    # Script elements are forbidden outright; the sandbox would reject the build anyway.
+    html = SCRIPT_EL_RE.sub("", html)
+    # An <img> with no src renders as a broken-image icon on a live customer site.
+    html = EMPTY_IMG_RE.sub("", html)
+    return html
+
+
+def _sanitize_files(files: dict[str, str]) -> dict[str, str]:
+    return {
+        name: _sanitize_html(body) if name.endswith(".html") else body
+        for name, body in files.items()
+    }
 
 
 def _with_base_css(css: str) -> str:
@@ -335,19 +438,24 @@ def _style_drift(files: dict[str, str]) -> str | None:
     return None
 
 
-async def _generate(prompt: str, expected: tuple[str, ...]) -> tuple[dict[str, str], dict]:
-    content, usage = await call_plain_completion(prompt)
+async def _generate(
+    prompt: str, expected: tuple[str, ...], *, fragments: bool = False,
+    reduced_reasoning: bool = False
+) -> tuple[dict[str, str], dict]:
+    content, usage = await call_plain_completion(prompt, reduced_reasoning=reduced_reasoning)
     files = _parse_files(content)
     missing = [name for name in expected if name not in files]
     if missing:
         raise GenerationFailed(
             f"Model response missing required file(s) {missing}: {content[:400]!r}"
         )
-    # Truncation guard: the free tier silently cuts long responses off, and Part 3's
-    # sandbox checks don't catch malformed HTML (Chromium renders it permissively).
+    # Truncation guard: the free tier silently cuts long responses off, and the sandbox
+    # can't catch malformed HTML (Chromium renders it permissively). Page responses are
+    # now fragments, so the closing element to look for is </main>, not </html>.
+    closing = "</main>" if fragments else "</html>"
     for name in expected:
-        if name.endswith(".html") and not files[name].rstrip().endswith("</html>"):
-            raise GenerationFailed(f"Model response looks truncated: {name} lacks a closing </html>")
+        if name.endswith(".html") and closing not in files[name]:
+            raise GenerationFailed(f"Model response looks truncated: {name} lacks a closing {closing}")
     return {name: files[name] for name in expected}, usage
 
 
@@ -361,7 +469,11 @@ async def _patch_one(filename: str, content: str, instruction: str) -> tuple[str
     """Patch a single file, rejecting a response that restructured too much of it."""
     last_error = ""
     for attempt in (1, 2):
-        text, usage = await call_plain_completion(_patch_prompt(filename, content, instruction))
+        # Applying a stated change to an existing file is mechanical work: the model was
+        # spending ~80% of its output budget deliberating rather than writing the file.
+        text, usage = await call_plain_completion(
+            _patch_prompt(filename, content, instruction), reduced_reasoning=True
+        )
         parsed = _parse_files(text)
         patched = parsed.get(filename) or (next(iter(parsed.values())) if len(parsed) == 1 else None)
 
@@ -381,6 +493,89 @@ async def _patch_one(filename: str, content: str, instruction: str) -> tuple[str
         logger.warning("patch attempt %d/2 rejected for %s: %s", attempt, filename, last_error)
 
     raise GenerationFailed(f"Could not apply that change to {filename} without rewriting it: {last_error}")
+
+
+async def repair_files(
+    files: dict[str, str],
+    checks: list[dict],
+    *,
+    session: AsyncSession | None = None,
+    owner_telegram_id: int | None = None,
+    business_id: uuid.UUID | None = None,
+) -> tuple[dict[str, str], dict | None, list[dict]]:
+    """Try once to fix the specific defects `checks` found, without rebuilding anything.
+
+    Returns (files, usage_or_None, remaining_failures). Deterministic sanitizing runs
+    first and is free; only what survives that is worth an API call.
+
+    Exists because three real builds were discarded at 6/7 and 7/8 checks over one empty
+    `mailto:` -- roughly 24,000 tokens each to regenerate a site that was already correct
+    apart from one link. Repair costs one call and a few thousand tokens.
+    """
+    files = _sanitize_files(files)
+    remaining = validate.failed(validate.validate_files(files))
+    if not remaining:
+        log_event(logger, "repair.sanitized", files=len(files))
+        return files, None, []
+
+    per_file = validate.files_needing_repair(remaining, files)
+    if not per_file:
+        return files, None, remaining
+
+    if owner_telegram_id is not None:
+        assert session is not None, "session is required when owner_telegram_id is given"
+        await check_quota(session, owner_telegram_id)
+
+    targets = sorted(per_file)
+    log_event(logger, "repair.started", files=targets,
+              problems=[c["name"] for c in remaining])
+
+    results = await asyncio.gather(
+        *(
+            _generate(
+                Template(_read_prompt("repair.md")).safe_substitute(
+                    filename=name,
+                    problems="\n".join(f"- {p}" for p in per_file[name]),
+                    file_content=files[name],
+                ),
+                (name,),
+                reduced_reasoning=True,
+            )
+            for name in targets
+        ),
+        return_exceptions=True,
+    )
+
+    usage = {"model": "", "input_tokens": 0, "output_tokens": 0, "requests": len(targets)}
+    repaired = dict(files)
+    for name, result in zip(targets, results):
+        if isinstance(result, Exception):
+            logger.warning("repair failed for %s: %s", name, result)
+            continue
+        part_files, part_usage = result
+        candidate = _sanitize_html(part_files[name])
+        # A "repair" that rewrote the page is not a repair. Same guard as patching.
+        similarity = _patch_similarity(files[name], candidate)
+        if similarity < MIN_PATCH_SIMILARITY:
+            logger.warning("repair for %s rewrote %.0f%% of the file; rejected", name, (1 - similarity) * 100)
+            continue
+        repaired[name] = candidate
+        usage["model"] = part_usage["model"]
+        usage["input_tokens"] += part_usage["input_tokens"]
+        usage["output_tokens"] += part_usage["output_tokens"]
+
+    still_failing = validate.failed(validate.validate_files(repaired))
+    log_event(logger, "repair.finished", fixed=len(remaining) - len(still_failing),
+              remaining=[c["name"] for c in still_failing],
+              tokens=usage["input_tokens"] + usage["output_tokens"])
+
+    if owner_telegram_id is not None and usage["input_tokens"]:
+        await record_usage(
+            session, owner_telegram_id, business_id, usage["model"],
+            usage["input_tokens"], usage["output_tokens"],
+            kind="repair", requests=usage["requests"],
+        )
+    return repaired, (usage if usage["input_tokens"] else None), still_failing
 
 
 async def patch_site_files(
@@ -415,7 +610,7 @@ async def patch_site_files(
     patched = dict(files)
     usage = {"model": "", "input_tokens": 0, "output_tokens": 0, "requests": len(wanted)}
     for name, (content, part_usage) in zip(wanted, results):
-        patched[name] = _strip_broken_links(content) if name.endswith(".html") else content
+        patched[name] = _sanitize_html(content) if name.endswith(".html") else content
         usage["model"] = part_usage["model"]
         usage["input_tokens"] += part_usage["input_tokens"]
         usage["output_tokens"] += part_usage["output_tokens"]
@@ -454,9 +649,12 @@ async def build_site(
         assert session is not None, "session is required when owner_telegram_id is given"
         await check_quota(session, owner_telegram_id)
 
-    shared = _shared_block(spec)
-    jobs = [_generate(_pages_prompt(shared, group), group) for group in PAGE_GROUPS]
-    jobs.append(_generate(_stylesheet_prompt(shared), (STYLESHEET_FILE,)))
+    layout = spec.get("layout")
+    jobs = [
+        _generate(_pages_prompt(spec, group), group, fragments=True)
+        for group in page_groups_for(layout)
+    ]
+    jobs.append(_generate(_stylesheet_prompt(spec), (STYLESHEET_FILE,)))
 
     try:
         results = await asyncio.gather(*jobs)
@@ -468,18 +666,18 @@ async def build_site(
     files: dict[str, str] = {}
     usage = {"model": "", "input_tokens": 0, "output_tokens": 0, "requests": len(jobs)}
     for part_files, part_usage in results:
-        files.update(part_files)
+        for name, body in part_files.items():
+            # Pages come back as fragments; the shared shell is added here rather than
+            # written four times by the model.
+            files[name] = _assemble_page(spec, name, body) if name.endswith(".html") else body
         usage["model"] = part_usage["model"]
         usage["input_tokens"] += part_usage["input_tokens"]
         usage["output_tokens"] += part_usage["output_tokens"]
 
     files[STYLESHEET_FILE] = _with_base_css(files.get(STYLESHEET_FILE, ""))
-    files = {
-        name: _strip_broken_links(body) if name.endswith(".html") else body
-        for name, body in files.items()
-    }
+    files = _sanitize_files(files)
 
-    missing = [name for name in REQUIRED_FILES if name not in files]
+    missing = [name for name in required_files_for(layout) if name not in files]
     if missing:
         raise GenerationFailed(f"Generated site is missing required file(s): {missing}")
 

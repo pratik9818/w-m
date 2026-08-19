@@ -83,51 +83,56 @@ async def cmd_status(message: Message) -> None:
     await message.answer("\n\n".join(blocks))
 
 
+# Measured from real builds: a full site runs ~20-24k and a patched edit ~7-12k. Used only
+# to translate the allowance into "how many more websites/changes", which is the only form
+# of this number an owner can act on.
+AVG_BUILD_COST = 22_000
+AVG_EDIT_COST = 9_000
+
+
 def _bar(percent: float, width: int = 10) -> str:
     filled = min(int(round(percent / 100 * width)), width)
     return "█" * filled + "░" * (width - filled)
 
 
-@router.message(Command("quota"))
-async def cmd_quota(message: Message) -> None:
+@router.message(Command("token"))
+async def cmd_token(message: Message) -> None:
     async with session_scope() as session:
         q = await get_quota_summary(session, message.from_user.id)
 
     if q["operations"] == 0:
         await message.answer(
-            f"You haven't used any of your allowance yet.\n\n"
-            f"💳 <b>{q['limit']:,}</b> tokens available."
+            "You haven't used any of your allowance yet — enough for roughly "
+            f"<b>{q['limit'] // AVG_BUILD_COST}</b> new websites, or many more small changes."
         )
         return
 
+    # An owner has no idea what a "token" is. What they want to know is how much they can
+    # still do, so the headline figure is in websites and changes, not raw numbers.
+    builds_left = q["remaining"] // AVG_BUILD_COST
+    edits_left = q["remaining"] // AVG_EDIT_COST
+
     lines = [
-        "📊 <b>Your usage</b>",
+        "📊 <b>Your allowance</b>",
         "",
         f"{_bar(q['percent_used'])}  {q['percent_used']}% used",
-        f"Used: <b>{q['used']:,}</b> of {q['limit']:,} tokens",
-        f"Left: <b>{q['remaining']:,}</b> tokens",
         "",
-        f"Across {q['operations']} operation(s):",
+        "With what's left you can make roughly:",
+        f"  • <b>{builds_left}</b> more new websites, or",
+        f"  • <b>{edits_left}</b> more changes to a site you already have",
+        "",
+        "Where it's gone so far:",
     ]
     for kind, tokens, count in q["by_kind"]:
         label = KIND_LABELS.get(kind, kind)
         share = round(tokens / q["used"] * 100) if q["used"] else 0
-        lines.append(f"  • {label}: <b>{tokens:,}</b> ({share}%) — {count}x")
+        lines.append(f"  • {label} — {count}x ({share}%)")
 
-    if q["recent"]:
-        lines += ["", "Most recent:"]
-        for kind, tokens, ts in q["recent"]:
-            lines.append(f"  • {ts:%d %b %H:%M} — {KIND_LABELS.get(kind, kind)}, {tokens:,} tokens")
-
-    # Requests are a separate ceiling imposed by the AI provider, and it is the one that
-    # actually stops builds. Showing only tokens would read "plenty left" at the moment
-    # everything starts failing.
     lines += [
         "",
-        f"🔁 AI requests today: <b>{q['today_requests']}</b>",
-        "<i>Building a site takes about 3 requests, a small edit 1–2. "
-        "There's a separate daily limit on requests, so if builds start failing, "
-        "that's usually why — it resets automatically.</i>",
+        f"<i>You've used {q['used']:,} of {q['limit']:,} — that's how it's measured behind "
+        "the scenes. There's also a daily cap, so if a build won't start, waiting a while "
+        "usually fixes it.</i>",
     ]
 
     await message.answer("\n".join(lines))

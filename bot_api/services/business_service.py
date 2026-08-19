@@ -48,6 +48,7 @@ class OnboardingSpec:
         self.logo: dict | None = None  # {"storage_path": ..., "url": ...}
         self.photos: list[dict] = []
         self.theme: str = "classic"
+        self.layout: str = "multipage"
 
 
 async def create_business_from_spec(
@@ -64,6 +65,7 @@ async def create_business_from_spec(
         tagline=spec.tagline,
         about=spec.about,
         theme=spec.theme,
+        layout=spec.layout,
         phone=spec.phone,
         email=spec.email,
         address=spec.address,

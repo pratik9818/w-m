@@ -5,15 +5,15 @@ exists. Not used in production — the deployed app uses bot_api/bot/webhook.py.
 """
 
 import asyncio
-import logging
 
 from bot_api.bot.bot import get_bot, get_dispatcher
 from bot_api.config import get_settings
+from bot_api.logging_config import configure_logging
 from db.base import init_engine
 
 
 async def main() -> None:
-    logging.basicConfig(level=logging.INFO)
+    configure_logging("bot")
 
     settings = get_settings()
     init_engine(settings.database_url)

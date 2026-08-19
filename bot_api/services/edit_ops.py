@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -59,13 +60,48 @@ FIELD_TARGETS: dict[str, tuple[str, ...]] = {
 }
 
 
-def normalize_patch_targets(targets: list[str] | None) -> list[str]:
-    """Keep only real filenames, preserving the canonical order and dropping duplicates."""
+# Asking a patch to add or delete a page is a contradiction: patching means "return this
+# file with one change applied", so it can never remove the file it was handed. One real
+# request -- "Keep only one page and remove all" -- was accepted anyway and burned 21,867
+# tokens across three calls to return the same three pages very slightly reworded.
+STRUCTURAL_REQUEST_RE = re.compile(
+    r"\b(remove|delete|drop|get rid of)\b[^.]{0,40}\b(page|pages|\w+\.html)\b"
+    r"|\b(add|create|make)\b[^.]{0,30}\b(new page|another page|extra page)\b"
+    r"|\bkeep only one page\b|\bsingle[- ]page\b|\bone[- ]page\b|\blanding page\b",
+    re.IGNORECASE,
+)
+
+
+def is_structural_request(instruction: str) -> bool:
+    """True if this asks to change which pages exist, which patching cannot do."""
+    return bool(STRUCTURAL_REQUEST_RE.search(instruction or ""))
+
+
+def normalize_patch_targets(
+    targets: list[str] | None, available: list[str] | None = None
+) -> list[str]:
+    """Keep only filenames that actually exist on THIS site.
+
+    `available` matters for one-page sites: they have only index.html and style.css, so a
+    request about "services" naturally names services.html, which isn't there. That used to
+    reach the worker and fail the whole build with "Nothing to patch". Anything naming a
+    page this site doesn't have is redirected to the page that does exist, because on a
+    landing site those sections all live in index.html.
+    """
+    known = [n for n in PATCHABLE_FILES if available is None or n in available]
     requested = {str(t).strip().lstrip("./").lower() for t in (targets or [])}
-    return [name for name in PATCHABLE_FILES if name.lower() in requested]
+    resolved = [name for name in known if name.lower() in requested]
+    if resolved:
+        return resolved
+
+    # Nothing matched. If they named any HTML page, they meant page content -- send it to
+    # the pages this site really has rather than failing.
+    if any(r.endswith(".html") for r in requested):
+        return [n for n in known if n.endswith(".html")]
+    return [n for n in known if n.lower() in requested]
 
 
-def patch_for_field_edit(op: dict) -> dict | None:
+def patch_for_field_edit(op: dict, available: list[str] | None = None) -> dict | None:
     """Turn a spec-field edit into a surgical patch instruction for the live files.
 
     The spec stays the source of truth for a future rebuild; this keeps the deployed
@@ -79,7 +115,11 @@ def patch_for_field_edit(op: dict) -> dict | None:
             targets += files
     if not parts:
         return None
-    ordered = [name for name in PATCHABLE_FILES if name in set(targets)]
+    # Filtered against the site's real files: a one-page site has no contact.html, so a
+    # phone change must land on index.html instead of a file that isn't there.
+    ordered = normalize_patch_targets(sorted(set(targets)), available)
+    if not ordered:
+        return None
     return {
         "instruction": (
             "Update the site's existing content to reflect these new details, changing only "
@@ -89,14 +129,35 @@ def patch_for_field_edit(op: dict) -> dict | None:
     }
 
 
-def patch_for_service_edit(summary: str) -> dict:
+def patch_for_extra_instructions(instructions: str) -> dict:
+    """Apply a saved design preference to the stylesheet instead of rebuilding the site.
+
+    A durable preference is, by definition, about how the site looks -- so it belongs in
+    style.css. Routing it to a full rebuild is what made "Layout, it should be consistent
+    in all pages" cost ~24,000 tokens and return a site with different colours, which is
+    the complaint this whole patching architecture exists to prevent. A stylesheet patch
+    costs roughly a seventh of that and cannot touch the page content at all.
+    """
+    return {
+        "instruction": (
+            f"Apply this styling preference to the stylesheet: {instructions.strip()}. "
+            "Change only the rules needed for it; leave every other rule exactly as it is."
+        ),
+        "targets": [STYLESHEET_FILE],
+    }
+
+
+def patch_for_service_edit(summary: str, available: list[str] | None = None) -> dict | None:
     """Service list changed -- refresh only the places services are listed."""
+    targets = normalize_patch_targets(list(FIELD_TARGETS["services"]), available)
+    if not targets:
+        return None
     return {
         "instruction": (
             f"The business's service list changed ({summary}). Update the existing services "
             "content to match, changing only the service entries themselves."
         ),
-        "targets": [name for name in PATCHABLE_FILES if name in set(FIELD_TARGETS["services"])],
+        "targets": targets,
     }
 
 

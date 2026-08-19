@@ -11,19 +11,34 @@ appear alone on its own line, exactly as written:
 
 $output_format
 
-## Rules for every page you write
+Where each `<the …>` placeholder is the title, meta description and `<main>` block described
+below — not a whole HTML document.
 
-- A complete, valid HTML document: `<!DOCTYPE html>`, `<html lang="en">`, a `<head>` with its
-  own unique `<title>` and `<meta name="description">` written from this business's real
-  details, a viewport meta tag, `<link rel="stylesheet" href="style.css">`, then `<body>`.
-  Never a fragment.
-- The same header on every page: the business name (and logo image if the data gives a logo
-  URL) plus a nav linking to `index.html`, `about.html`, `services.html` and `contact.html`.
-  Mark the current page's link with the `is-current` class.
-- The same footer on every page, using the literal copyright year from the business data.
-- Only link to those four page files. Never link to a page or an anchor that does not exist.
-- **At least 400 words of real body copy per page.** Short pages are a failure.
+## What to write for each page
+
+**Do not write the page shell.** The `<!DOCTYPE>`, `<head>`, the site header with its
+navigation, and the footer are added automatically and are identical on every page — writing
+them yourself would be discarded. Write only the three pieces below, in this order:
+
+1. `<title>` — unique to this page, written from the business's real details
+2. `<meta name="description" content="...">` — unique to this page
+3. `<main>` … `</main>` — all of the page's own content
+
+So each file looks exactly like this, and nothing else:
+
+```html
+<title>Page title here</title>
+<meta name="description" content="Description here">
+<main>
+  <section class="page-hero">…</section>
+  <section class="section">…</section>
+</main>
+```
+
+- **At least 400 words of real body copy inside `<main>`.** Short pages are a failure.
 - Use the shared class contract for every structure. Wrap section content in `container`.
+- Only ever link to `index.html`, `about.html`, `services.html` or `contact.html`. Never link
+  to a page or an anchor that does not exist.
 
 ## Required content
 

@@ -15,6 +15,13 @@ img { max-width: 100%; height: auto; }
 
 .container { width: 100%; max-width: 1100px; margin: 0 auto; padding: 0 1rem; }
 
+/* Owner-uploaded pictures. Without explicit sizing an <img> renders at its natural size,
+ * so a phone photo used as a logo would fill the whole header. */
+.logo-mark { height: 2.5rem; width: auto; object-fit: contain; }
+.hero-image { width: 100%; max-height: 420px; object-fit: cover; border-radius: .5rem; }
+.gallery-image { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: .5rem; }
+.about-image { width: 100%; max-width: 420px; border-radius: .5rem; }
+
 .site-header { padding: 1rem 0; }
 .header-inner { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; justify-content: space-between; }
 .logo { display: inline-flex; align-items: center; gap: .5rem; text-decoration: none; font-weight: 700; }
@@ -47,10 +54,16 @@ img { max-width: 100%; height: auto; }
 .step-title { margin: 0 0 .25rem; font-size: 1.05rem; }
 .step-text { margin: 0; }
 
+/* FAQ items are <details>/<summary>: they expand on click with no JavaScript. */
+html { scroll-behavior: smooth; }
 .faq-list { display: grid; gap: 1rem; margin: 0; padding: 0; }
 .faq-item { padding: 1rem; border: 1px solid rgba(0, 0, 0, .12); border-radius: .5rem; }
-.faq-question { margin: 0 0 .5rem; font-size: 1.05rem; font-weight: 700; }
-.faq-answer { margin: 0; }
+.faq-question { margin: 0; font-size: 1.05rem; font-weight: 700; cursor: pointer;
+  list-style: none; display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
+.faq-question::-webkit-details-marker { display: none; }
+.faq-question::after { content: "+"; font-weight: 700; flex: 0 0 auto; }
+details[open] > .faq-question::after { content: "\2212"; }
+.faq-answer { margin: .75rem 0 0; }
 
 .cta-band { padding: 3rem 0; text-align: center; }
 .cta-title { margin: 0 0 .5rem; font-size: clamp(1.3rem, 3vw, 1.9rem); }

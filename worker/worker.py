@@ -7,6 +7,7 @@ from arq.connections import RedisSettings
 
 from bot_api.bot.bot import get_bot
 from bot_api.config import get_settings
+from bot_api.logging_config import configure_logging
 from db.base import init_engine
 from worker.tasks.generate import run_generation_pipeline
 from worker.tasks.reaper import reap_stale_builds
@@ -15,6 +16,7 @@ from worker.tasks.rollback import rollback_site
 
 async def on_startup(ctx: dict) -> None:
     settings = get_settings()
+    configure_logging("worker")
     init_engine(settings.database_url)
     ctx["bot"] = get_bot()
 

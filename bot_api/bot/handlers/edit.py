@@ -11,12 +11,15 @@ from bot_api.services.edit_ops import (
     ValidationError,
     apply_edit_operation,
     is_business_busy,
+    is_structural_request,
     normalize_patch_targets,
+    patch_for_extra_instructions,
     patch_for_field_edit,
     patch_for_service_edit,
 )
 from bot_api.services.nl_edit import EditParseFailed, parse_edit_message
 from bot_api.services.queue import enqueue_generation, enqueue_rollback
+from worker.codegen.builder import page_files_for
 from worker.codegen.quota import record_usage
 from worker.tasks.deploy import delete_pages_project
 from bot_api.services.redis_client import get_redis
@@ -107,6 +110,11 @@ async def catch_all_edit(message: Message) -> None:
             )
             return
 
+        # Which files this particular site actually has. A landing site has only
+        # index.html and style.css, so any patch aimed at about/services/contact.html
+        # would otherwise reach the worker and fail the build outright.
+        site_files = [*page_files_for(business.layout), "style.css"]
+
         # A previously-drafted tagline/about is waiting on a yes/no before publishing.
         pending = await get_pending_edit(redis, business.id)
         if pending is not None:
@@ -172,7 +180,8 @@ async def catch_all_edit(message: Message) -> None:
                 )
                 business_id, business_name = business.id, business.name
                 await enqueue_generation(
-                    business_id, trigger="edit", patch=patch_for_field_edit(pending)
+                    business_id, trigger="edit",
+                    patch=patch_for_field_edit(pending, available=site_files)
                 )
                 await message.answer(
                     f"Updating <b>{business_name}</b> — {summary}. I'll message you here once the new version is live!"
@@ -219,9 +228,51 @@ async def catch_all_edit(message: Message) -> None:
         # A surgical change to something already on the site. Nothing in the spec changes --
         # the instruction is applied straight to the stored files, so every page and every
         # style rule the owner didn't mention comes through byte-identical.
+        # Changing how many pages exist is a rebuild, not a patch -- a patch is handed one
+        # file and asked to return it, so it can never delete one.
+        if op["operation"] == "change_layout":
+            wanted = "landing" if str(op.get("layout", "")).lower().startswith("land") else "multipage"
+            if business.layout == wanted:
+                await message.answer(
+                    f"<b>{business.name}</b> is already "
+                    + ("a one-page landing site." if wanted == "landing" else "a four-page site.")
+                )
+                return
+            business.layout = wanted
+            business.generation_status = "queued"
+            session.add(_log(business.id, telegram_user_id, raw_message, op=op, applied=True))
+            await session.commit()
+            business_id, business_name = business.id, business.name
+            await enqueue_generation(business_id, trigger="rebuild")
+            await message.answer(
+                f"Rebuilding <b>{business_name}</b> as "
+                + ("a single landing page — everything on one page, with the menu scrolling "
+                   "to each section." if wanted == "landing"
+                   else "a four-page site with separate About, Services and Contact pages.")
+                + "\n\nThis writes the site fresh, so the wording and design will change. "
+                "I'll message you when it's live."
+            )
+            return
+
         if op["operation"] == "patch_site":
             instruction = (op.get("instruction") or "").strip()
-            targets = normalize_patch_targets(op.get("targets"))
+            targets = normalize_patch_targets(
+                op.get("targets"), available=list(page_files_for(business.layout)) + ["style.css"]
+            )
+
+            # Refuse before spending anything. One such request cost 21,867 tokens across
+            # three calls and changed nothing, because patching cannot delete a page.
+            if is_structural_request(instruction) or is_structural_request(raw_message):
+                session.add(_log(business.id, telegram_user_id, raw_message, op=op,
+                                 error="rejected: structural request sent to patch_site"))
+                await session.commit()
+                await message.answer(
+                    "To change how many pages your site has, tell me which you want:\n\n"
+                    "• <b>a single landing page</b> — everything on one page, menu scrolls to sections\n"
+                    "• <b>a four-page site</b> — separate About, Services and Contact pages\n\n"
+                    "Just say which one and I'll rebuild it that way."
+                )
+                return
             if not instruction or not targets:
                 session.add(_log(business.id, telegram_user_id, raw_message, op=op,
                                  error="patch_site missing instruction or valid targets"))
@@ -306,9 +357,11 @@ async def catch_all_edit(message: Message) -> None:
     # extra_instructions preference, which only takes effect on a rebuild) falls back to a
     # full build, which is correct -- there is nothing on the current pages to patch.
     if operation == "update_business_info":
-        patch = patch_for_field_edit(op)
+        patch = patch_for_field_edit(op, available=site_files)
     elif operation in ("add_service", "update_service", "remove_service"):
-        patch = patch_for_service_edit(summary)
+        patch = patch_for_service_edit(summary, available=site_files)
+    elif operation == "update_extra_instructions" and op.get("instructions"):
+        patch = patch_for_extra_instructions(op["instructions"])
     else:
         patch = None
 

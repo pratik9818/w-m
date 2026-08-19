@@ -19,6 +19,8 @@ class Business(Base):
     tagline: Mapped[str | None] = mapped_column(String(120))
     about: Mapped[str | None] = mapped_column(Text)
     theme: Mapped[str] = mapped_column(String(20), nullable=False, default="classic")
+    # 'multipage' (four linked pages) or 'landing' (one page, nav scrolls to sections).
+    layout: Mapped[str] = mapped_column(String(20), nullable=False, default="multipage")
     phone: Mapped[str | None] = mapped_column(String(40))
     email: Mapped[str | None] = mapped_column(String(120))
     address: Mapped[str | None] = mapped_column(Text)

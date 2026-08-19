@@ -62,6 +62,27 @@ async def set_pending_edit(redis: Redis, business_id: uuid.UUID, op: dict) -> No
     await redis.set(key, json.dumps(op), ex=_PENDING_EDIT_TTL_SECONDS)
 
 
+_PENDING_PHOTO_KEY = "pending_photo:{telegram_user_id}"
+
+
+async def set_pending_photo(redis: Redis, telegram_user_id: int, photo: dict) -> None:
+    """Hold an uploaded photo while the owner says where it should go."""
+    await redis.set(
+        _PENDING_PHOTO_KEY.format(telegram_user_id=telegram_user_id),
+        json.dumps(photo),
+        ex=1800,
+    )
+
+
+async def get_pending_photo(redis: Redis, telegram_user_id: int) -> dict | None:
+    raw = await redis.get(_PENDING_PHOTO_KEY.format(telegram_user_id=telegram_user_id))
+    return json.loads(raw) if raw else None
+
+
+async def clear_pending_photo(redis: Redis, telegram_user_id: int) -> None:
+    await redis.delete(_PENDING_PHOTO_KEY.format(telegram_user_id=telegram_user_id))
+
+
 async def clear_pending_edit(redis: Redis, business_id: uuid.UUID) -> None:
     key = _PENDING_EDIT_KEY.format(business_id=business_id)
     await redis.delete(key)

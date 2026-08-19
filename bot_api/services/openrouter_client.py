@@ -27,11 +27,13 @@ Two call shapes, deliberately NOT interchangeable:
 import asyncio
 import concurrent.futures
 import json
-import sys
+import logging
 
 import httpx
 
 from bot_api.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -93,6 +95,21 @@ class DailyLimitReached(OpenRouterCallFailed):
     """
 
 
+# Both chosen models reason before answering, and OpenRouter bills that thinking as
+# completion tokens. Measured on a real edit: 28,610 output tokens billed while the two
+# files being returned were only ~5,595 tokens -- roughly 80% was invisible deliberation.
+#
+# `medium` rather than `low`: deliberately conservative. On a trivial probe the three
+# effort levels came out non-monotonic (low 48, medium 104, high 46 tokens), so that probe
+# proves the parameter is accepted but says nothing reliable about the real saving -- and
+# nothing at all about quality. Medium keeps a safety margin on edit quality until the
+# effect is measured on an actual patch.
+#
+# Note `exclude: true` is NOT the same thing: it hides reasoning from the response while
+# still generating and billing it.
+REDUCED_REASONING = {"reasoning": {"effort": "medium"}}
+
+
 async def call_forced_tool(prompt: str, tools: list[dict]) -> tuple[dict, dict]:
     """Call OpenRouter with `prompt`, forcing a call to exactly one of `tools`
     (each a plain {"name", "description", "parameters"} schema dict). With a single
@@ -109,20 +126,27 @@ async def call_forced_tool(prompt: str, tools: list[dict]) -> tuple[dict, dict]:
     body_extra = {
         "tools": [{"type": "function", "function": t} for t in tools],
         "tool_choice": "required",
+        # Picking one operation from a fixed list is a classification, not an essay --
+        # one such call spent 5,744 output tokens deliberating over a small JSON answer.
+        **REDUCED_REASONING,
     }
     data, model = await _request_with_retries(prompt, body_extra, TOOL_MODELS, TOOL_MAX_ATTEMPTS)
     return _parse_tool_response(data, model, valid_names)
 
 
-async def call_plain_completion(prompt: str) -> tuple[str, dict]:
+async def call_plain_completion(prompt: str, *, reduced_reasoning: bool = False) -> tuple[str, dict]:
     """Call OpenRouter with `prompt`, no tools -- a plain text completion. Use this
     for long-form output (e.g. a full HTML document) that would otherwise get cut
     off by the free tier's ~1024-character cap on tool-call argument strings.
 
     Returns (response_text, usage).
     """
+    # Writing a site from scratch is creative work where deliberation earns its cost;
+    # applying a stated change to an existing file is mechanical, so callers doing that
+    # pass low_reasoning and stop paying for thinking they don't need.
+    body = {"max_tokens": GENERATION_MAX_TOKENS, **(REDUCED_REASONING if reduced_reasoning else {})}
     data, model = await _request_with_retries(
-        prompt, {"max_tokens": GENERATION_MAX_TOKENS}, GENERATION_MODELS, GENERATION_MAX_ATTEMPTS
+        prompt, body, GENERATION_MODELS, GENERATION_MAX_ATTEMPTS
     )
     choices = data.get("choices") or []
     content = choices[0]["message"].get("content") if choices else None
@@ -143,7 +167,10 @@ async def _request_with_retries(
     last_error: Exception | None = None
     for model in models:
         for attempt in range(1, max_attempts + 1):
-            print(f"[openrouter] {model} attempt {attempt}/{max_attempts}...", file=sys.stderr, flush=True)
+            logger.info(
+                "llm.attempt",
+                extra={"event": "llm.attempt", "model": model, "attempt": attempt, "max_attempts": max_attempts},
+            )
             try:
                 resp = await asyncio.to_thread(_post_sync_bounded, headers, {**body_base, "model": model})
             except (httpx.HTTPError, concurrent.futures.TimeoutError) as exc:

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import re
 import time
 
@@ -13,6 +14,8 @@ from playwright.async_api import async_playwright
 
 from bot_api.config import get_settings
 from worker.codegen.html_check import html_problems
+
+logger = logging.getLogger(__name__)
 
 SANDBOX_TIMEOUT_SECONDS = 60
 READY_POLL_TIMEOUT_SECONDS = 15
@@ -57,10 +60,19 @@ async def sandbox_test(files: dict[str, str]) -> dict:
     daytona = AsyncDaytona(DaytonaConfig(api_key=get_settings().daytona_api_key))
 
     try:
-        sandbox = await daytona.create(
-            CreateSandboxFromSnapshotParams(language="python", public=True),
-            timeout=SANDBOX_TIMEOUT_SECONDS,
-        )
+        # Creation is the flakiest step and costs no tokens, so one retry is free
+        # insurance -- a single 60s timeout destroyed a whole real build.
+        for attempt in (1, 2):
+            try:
+                sandbox = await daytona.create(
+                    CreateSandboxFromSnapshotParams(language="python", public=True),
+                    timeout=SANDBOX_TIMEOUT_SECONDS,
+                )
+                break
+            except Exception:
+                if attempt == 2:
+                    raise
+                logger.warning("sandbox creation failed, retrying once", exc_info=True)
 
         home_dir = await sandbox.get_user_home_dir()
         site_dir = f"{home_dir}/site"

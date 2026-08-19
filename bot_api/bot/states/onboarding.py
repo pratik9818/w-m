@@ -2,22 +2,15 @@ from aiogram.fsm.state import State, StatesGroup
 
 
 class OnboardingStates(StatesGroup):
-    waiting_name = State()
-    waiting_category = State()
-    waiting_category_other = State()
-    waiting_tagline = State()
-    waiting_about = State()
-    waiting_service_name = State()
-    waiting_service_price = State()
-    waiting_add_another_service = State()
-    waiting_phone = State()
-    waiting_email = State()
-    waiting_address = State()
-    waiting_hours = State()
-    waiting_logo = State()
-    waiting_photos = State()
-    waiting_theme = State()
-    confirm = State()
+    """One state: the owner describes their site, the model turns that into a brief.
+
+    The previous ~12 states (name, category, tagline, about, services loop, phone, email,
+    address, hours, logo, photos, theme, layout, confirm) each asked for one field. The
+    model now infers all of them from a single message, and only asks a follow-up when it
+    genuinely cannot tell what the business is.
+    """
+
+    waiting_brief = State()
 
 
 CATEGORIES = [
