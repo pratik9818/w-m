@@ -12,6 +12,7 @@ from bot_api.services.openrouter_client import DailyLimitReached
 from db.base import session_scope
 from db.models import Business, SiteVersion
 from worker.codegen.builder import (
+    EditNotApplied,
     GenerationFailed,
     build_site,
     patch_site_files,
@@ -84,6 +85,7 @@ async def run_generation_pipeline(
                     live_files,
                     patch["instruction"],
                     patch.get("targets") or [],
+                    user_message=patch.get("user_message"),
                     session=session,
                     owner_telegram_id=business.owner_telegram_id,
                     business_id=business.id,
@@ -105,6 +107,13 @@ async def run_generation_pipeline(
         except QuotaExceeded:
             await _mark_failed(session, business, site_version, "quota", "token quota exceeded")
             await notify_owner_failure(bot, business, "quota")
+            return
+        except EditNotApplied as exc:
+            # Must precede GenerationFailed: it's a subclass, and this case is not a fault
+            # in the site -- the change simply didn't land, and the owner needs to know
+            # that rather than being congratulated on an unchanged site.
+            await _mark_failed(session, business, site_version, "not_applied", str(exc))
+            await notify_owner_failure(bot, business, "not_applied")
             return
         except GenerationFailed as exc:
             await _mark_failed(session, business, site_version, "generation", str(exc))

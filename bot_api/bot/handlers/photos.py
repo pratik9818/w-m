@@ -8,6 +8,7 @@ new model: no question up front, just send the picture whenever you have one.
 The owner is always asked where it goes rather than the bot guessing, because a logo and a
 gallery photo are completely different things and getting it wrong is very visible.
 """
+import hashlib
 import logging
 import uuid
 
@@ -24,6 +25,7 @@ from bot_api.services.session import (
     clear_pending_photo,
     get_active_business_id,
     get_pending_photo,
+    push_edit_turn,
     set_pending_photo,
 )
 from bot_api.services.storage import UploadRejected, upload_media
@@ -47,27 +49,45 @@ PLACEMENTS = {
     ),
     "hero": (
         "photo",
-        "Add this image as a large banner picture at the very top of the page, inside the "
-        'hero section: <img src="{url}" alt="{name}" class="hero-image">. Do not change '
-        "anything else.",
+        "Show this image as the large banner picture at the very top of the page, inside "
+        'the hero section: <img src="{url}" alt="{name}" class="hero-image">. There must '
+        "end up with exactly ONE picture at the top: if the hero section already has one, "
+        "REPLACE it with this one instead of adding a second, and if the hero has a "
+        "background image remove that too. Do not change anything else.",
+    ),
+    # Distinct from "hero" above: that puts the picture above the text, this puts it behind
+    # it. An owner asked for exactly this in chat twice and got nothing both times, because
+    # there was no way to say it -- offering it as a choice here is the direct answer.
+    "background": (
+        "photo",
+        "Put this image BEHIND the text at the top of the page as a background, not above "
+        'it. Add the class `hero-bg` alongside `hero` on the hero section and set '
+        "style=\"background-image: url('{url}')\" on that same element. Remove EVERY "
+        '<img class="hero-image"> from the hero section, whatever picture it shows, so the '
+        "photo does not appear twice. If the hero already has a background image, replace "
+        "it with this one. The overlay that keeps the text readable is already in the "
+        "stylesheet — do not add one. Do not change anything else.",
     ),
     "gallery": (
         "photo",
-        "Add this image to the photo gallery: <img src=\"{url}\" alt=\"{name}\" "
+        "Show this image in the photo gallery: <img src=\"{url}\" alt=\"{name}\" "
         'class="gallery-image">. If there is no gallery yet, add a new section with the '
-        'heading "Gallery" containing a `card-grid` with this one image in it. Do not '
-        "change anything else.",
+        'heading "Gallery" containing a `card-grid` with this one image in it. If this '
+        "exact image already appears anywhere else on the page, move it into the gallery "
+        "rather than leaving a second copy behind. Do not change anything else.",
     ),
     "about": (
         "photo",
-        "Add this image beside the About text: <img src=\"{url}\" alt=\"{name}\" "
-        'class="about-image">. Do not change anything else.',
+        "Show this image beside the About text: <img src=\"{url}\" alt=\"{name}\" "
+        'class="about-image">. If a picture is already there, REPLACE it with this one '
+        "rather than adding a second. Do not change anything else.",
     ),
 }
 
 CONFIRMATION = {
     "logo": "using it as your logo",
     "hero": "putting it at the top of your page",
+    "background": "putting it behind the text at the top of your page",
     "gallery": "adding it to your photo gallery",
     "about": "putting it beside your About text",
 }
@@ -106,6 +126,33 @@ async def on_photo(message: Message) -> None:
         file = await message.bot.get_file(photo.file_id)
         buffer = await message.bot.download_file(file.file_path)
         content = buffer.read()
+    except Exception:
+        logger.exception("photo download failed for business %s", business.id)
+        await message.answer("Sorry, I couldn't save that picture — please try sending it again.")
+        return
+
+    # Telegram issues a fresh file id every time a picture is uploaded again, so the id
+    # cannot tell "the same photo" from "a new one" -- three real uploads of one image
+    # produced three different ids. The bytes can.
+    digest = hashlib.sha256(content).hexdigest()
+    known = next((m for m in business.media if m.content_hash == digest), None)
+
+    if known is not None:
+        # Already on this site: reuse the stored file rather than uploading a second copy
+        # of identical bytes and offering it as if it were new.
+        await set_pending_photo(
+            get_redis(), message.from_user.id,
+            {"business_id": str(business.id), "url": known.url,
+             "storage_path": known.storage_path, "hash": digest, "reuse": True},
+        )
+        await message.answer(
+            "I've already got this picture on your site. Where would you like it? "
+            "Picking a spot moves it there rather than adding a second copy.",
+            reply_markup=photo_placement_keyboard(),
+        )
+        return
+
+    try:
         uploaded = await upload_media(
             business.id, "photo", f"{photo.file_unique_id}.jpg", content, "image/jpeg"
         )
@@ -120,7 +167,7 @@ async def on_photo(message: Message) -> None:
     await set_pending_photo(
         get_redis(), message.from_user.id,
         {"business_id": str(business.id), "url": uploaded["url"],
-         "storage_path": uploaded["storage_path"]},
+         "storage_path": uploaded["storage_path"], "hash": digest},
     )
     await message.answer(
         "Got your picture! Where would you like it on your site?",
@@ -158,11 +205,13 @@ async def on_photo_placement(callback: CallbackQuery) -> None:
             await callback.answer("Couldn't find that site.", show_alert=True)
             return
 
+        reuse = bool(pending.get("reuse"))
+
         if kind == "logo":
             # Only one logo: replace any previous one rather than stacking them up.
             for existing in [m for m in business.media if m.kind == "logo"]:
                 await session.delete(existing)
-        elif len([m for m in business.media if m.kind == "photo"]) >= MAX_GALLERY_PHOTOS:
+        elif not reuse and len([m for m in business.media if m.kind == "photo"]) >= MAX_GALLERY_PHOTOS:
             await clear_pending_photo(redis, callback.from_user.id)
             await callback.message.answer(
                 f"You've already got {MAX_GALLERY_PHOTOS} pictures on <b>{business.name}</b> — "
@@ -171,10 +220,14 @@ async def on_photo_placement(callback: CallbackQuery) -> None:
             await callback.answer()
             return
 
-        session.add(Media(
-            business_id=business.id, kind=kind,
-            storage_path=pending["storage_path"], url=pending["url"],
-        ))
+        # A picture already on this site is being moved, not added: recording it a second
+        # time is what put two copies of the same photo on a real owner's home page.
+        if not reuse:
+            session.add(Media(
+                business_id=business.id, kind=kind,
+                storage_path=pending["storage_path"], url=pending["url"],
+                content_hash=pending.get("hash"),
+            ))
         business.generation_status = "queued"
         await session.commit()
         name, layout = business.name, business.layout
@@ -192,6 +245,14 @@ async def on_photo_placement(callback: CallbackQuery) -> None:
             "instruction": instruction_template.format(url=pending["url"], name=name),
             "targets": targets,
         },
+    )
+    # Put the picture into the same conversation memory the chat editor reads. Without
+    # this, an owner who uploaded a photo and then said "put that picture in the
+    # background" got asked "which photo?" -- the upload had happened in a completely
+    # separate handler that left no trace of itself anywhere the parser could see.
+    await push_edit_turn(
+        redis, business_id, "(sent a photo)",
+        {"applied": "photo", "summary": f"{CONFIRMATION[choice]} — the picture is at {pending['url']}"},
     )
     await callback.message.answer(
         f"Great — {CONFIRMATION[choice]}. I'll message you when it's live!"

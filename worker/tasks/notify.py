@@ -28,6 +28,14 @@ FAILURE_COPY = {
         "{name} is written and looks good, but I couldn't get it online just now. "
         "Your current site is untouched — please try again in a few minutes."
     ),
+    # The edit ran but changed nothing -- almost always because it was aimed at something
+    # that isn't on the page. Asking for it in different words genuinely does help, so say
+    # that rather than implying a fault the owner can do nothing about.
+    "not_applied": (
+        "I couldn't work out how to make that change to {name}, so nothing was altered — "
+        "your site is exactly as it was. Could you tell me again in different words? "
+        "It helps to say which part of the page you mean and what you'd like it to look like."
+    ),
     "interrupted": (
         "Sorry — the update to {name} stopped partway through. Your site is still live and "
         "unchanged. Please send your change again."
@@ -52,10 +60,16 @@ async def notify_owner_success(
 ) -> None:
     text = f"🎉 <b>{business.name}</b> is live! {business.deployment_url}"
     if usage and remaining is not None:
-        # "You used 7,405 tokens" means nothing to a shop owner; "about 12 more changes"
-        # is the same fact in a form they can actually act on.
+        # Show both halves: the raw cost of *this* build (asked for directly -- an owner
+        # watching their allowance wants to see what each change actually spent) and the
+        # same figure translated into remaining changes, which is the part they can act on.
+        spent = usage["input_tokens"] + usage["output_tokens"]
         edits_left = remaining // 9_000
-        text += f"\n\n📊 Room for about <b>{edits_left}</b> more changes — /token for details."
+        text += (
+            f"\n\n📊 This update used <b>{spent:,}</b> tokens."
+            f"\n{remaining:,} left — room for about <b>{edits_left}</b> more changes."
+            f"\nSend /token for details."
+        )
     await bot.send_message(business.owner_telegram_id, text)
 
 

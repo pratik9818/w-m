@@ -5,7 +5,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from bot_api.services.slug import generate_unique_slug
-from db.models import Business, Media, Service
+from db.models import Business, Media, Service, SiteVersion
+
+
+async def get_live_files(session: AsyncSession, business: Business) -> dict[str, str] | None:
+    """The exact files currently deployed for this business, if we have them stored.
+
+    Mirrors the worker's own `_live_files`; the bot needs them so the edit parser can see
+    the real page before deciding what to change.
+    """
+    if business.current_version_id is None:
+        return None
+    result = await session.execute(
+        select(SiteVersion.files).where(SiteVersion.id == business.current_version_id)
+    )
+    return result.scalar_one_or_none() or None
 
 
 async def list_businesses_for_owner(session: AsyncSession, owner_telegram_id: int) -> list[Business]:

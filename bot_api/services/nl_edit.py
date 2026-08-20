@@ -3,12 +3,13 @@ import json
 from bot_api.services.openrouter_client import OpenRouterCallFailed, call_forced_tool
 from db.models import Business
 from worker.codegen.builder import spec_from_business
+from worker.codegen.outline import outline_site
 
 PROMPT_TEMPLATE = """You manage edits to a small business's website via chat. The owner just sent you a message. Your job is to turn it into exactly one structured operation by calling one of the available functions.
 
 Current site content:
 {spec_json}
-{context_section}
+{site_outline}{context_section}
 Owner's message:
 {raw_message}
 
@@ -21,6 +22,16 @@ Creative fields -- tagline, about: if the owner gives a vague or open instructio
 Attributed third-party claims -- customer quotes/reviews/testimonials, named awards, specific stats -- NEVER fabricate these under any function, even under the creative-fields allowance above. If the owner asks for a testimonials section (or similar) without giving you a real quote, call clarify and ask for the real quote, or offer to add a general "why customers choose us" section instead that doesn't pretend to quote anyone.
 
 Infeasible requests -- only these are genuinely not possible: online booking or calendars, payments or checkout, live chat, embedded maps or social feeds, customer logins, and a working enquiry form that sends messages (phone and email links work fine instead). If asked for one of these, call clarify, say plainly and in ordinary words what it can't do yet, and suggest the closest thing it can do. Never silently attempt something broken.
+
+## Pictures the site already has
+
+The site content above lists the owner's pictures under `logo_url` and `photo_urls`. Those are already uploaded and already on the site -- you can see them, so use them.
+
+When the owner says "that picture", "the photo", "this image", "my photo" or similar, they mean a picture that is already there. Do NOT ask which one and do NOT ask them to send it again. Pick the one they most likely mean -- the most recently added photo, or the one the recent conversation above is about -- and write a `patch_site` instruction naming its full URL. Asking "which photo would you like to use?" when the site has photos is a real failure that happened to a real owner: they had already sent it, twice, and had to start over.
+
+Only ask if the site genuinely has no pictures at all, in which case tell them they can send a photo straight to this chat.
+
+Moving a picture is not the same as adding one. "Put the photo in the background", "move it lower", "make it smaller" all mean the SAME picture should end up in a new place -- your instruction must say to move or replace it, never just to add one, or the owner ends up with two copies of the same photo and has to ask you to delete one.
 
 Everything else the owner is likely to ask for IS possible -- including FAQ panels that open when clicked, smooth scrolling, hover effects, extra sections, and switching between a one-page and a four-page site. See "What the site CAN do" below before ever telling someone no.
 
@@ -60,6 +71,19 @@ Genuinely not possible today, and worth saying plainly (in ordinary words, witho
 If the owner asks for several things in one message, your single operation must cover ALL of them. Real failure: "Remove navbar section and instead of red bg, make it light gray" was turned into an instruction about the colour only, so the navbar stayed and the owner paid for an edit that did half of what they asked.
 
 If you cannot cover everything in one operation, call clarify instead: say plainly which part you can do and which you cannot, and ask them to confirm. Never guess, and never quietly do the easier half. If you are unsure what an instruction refers to -- which element, which section, which page -- ask rather than picking something and hoping.
+
+## Writing a patch_site instruction
+
+The map above is what is really on the site. **Use it, and never invent anything that isn't in it** -- not a class name, not a section, not a picture. A name you guess will match nothing, and the change then silently does not happen.
+
+A real failure: an owner asked to make the top section taller and its heading bold. The instruction said `change .hero-section min-height to 100vh`. There is no `.hero-section` -- the map shows that section is `.hero` -- so the file came back untouched and the owner was told twice their change could not be made. They had explained it clearly both times.
+
+Write the instruction the way you would describe it to someone standing in front of the page:
+- name the part by **what a visitor sees**, and match it against the map -- "the section at the top of the home page (`section.hero`)", "the heading that reads 'Software that works for you'", "the cards under 'Why clients choose me'";
+- say **what should change**, including any exact value the owner gave ("twice as tall", "bold", "dark green", "links to https://...");
+- before asking the owner anything, check the map -- if it already answers your question, don't ask it.
+
+Whoever applies your instruction has the whole file in front of them. Your job is to say clearly and correctly what the owner wants changed and where it is.
 
 ## Choosing targets for patch_site
 
@@ -126,7 +150,11 @@ PATCH_SITE_TOOL = {
                 "items": {"type": "string"},
                 "description": "Which files this change touches: any of index.html, about.html, "
                 "services.html, contact.html, style.css. Header/nav/logo/footer changes touch all "
-                "four HTML files; colour/font/spacing changes touch style.css only.",
+                "four HTML files; pure colour/font/spacing changes touch style.css only. "
+                "Anything involving a PICTURE -- moving a photo, putting one behind text as a "
+                "background, resizing or removing one -- must include the page the picture is on "
+                "as well as style.css, because the picture itself sits on the page, not in the "
+                "stylesheet. Listing style.css alone for a photo change does nothing at all.",
             },
         },
         "required": ["instruction", "targets"],
@@ -268,7 +296,10 @@ def _render_context_section(context: list[dict] | None) -> str:
 
 
 async def parse_edit_message(
-    raw_message: str, business: Business, context: list[dict] | None = None
+    raw_message: str,
+    business: Business,
+    context: list[dict] | None = None,
+    files: dict[str, str] | None = None,
 ) -> tuple[dict, dict]:
     """Parse a free-text edit message into a structured operation.
 
@@ -281,10 +312,13 @@ async def parse_edit_message(
     dropping that made the quota under-report real spend.
     """
     spec_json = json.dumps(spec_from_business(business), indent=2, ensure_ascii=False)
-    context_section = _render_context_section(context)
+    outline = outline_site(files)
     prompt = PROMPT_TEMPLATE.format(
         spec_json=spec_json,
-        context_section=context_section,
+        site_outline=(
+            f"\nWhat is actually on the site right now (the map):\n{outline}\n" if outline else ""
+        ),
+        context_section=_render_context_section(context),
         raw_message=raw_message,
         files_section=_files_section(business),
     )

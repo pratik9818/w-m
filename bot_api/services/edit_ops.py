@@ -77,6 +77,25 @@ def is_structural_request(instruction: str) -> bool:
     return bool(STRUCTURAL_REQUEST_RE.search(instruction or ""))
 
 
+# A picture is an element on a page, never a rule in the stylesheet. A real edit asking to
+# put a photo behind the hero text was sent to style.css alone, twice, and changed nothing
+# both times -- the <img> it needed to move was in index.html, which was never opened.
+PICTURE_WORDS = ("image", "photo", "picture", "background", "banner", "logo")
+
+
+def widen_targets_for_pictures(instruction: str, targets: list[str]) -> list[str]:
+    """Add a page file when a picture change was aimed at the stylesheet alone.
+
+    Deterministic on purpose. The tool description says this too, but a rule that lives
+    only in a prompt is a hope -- this one had already been ignored in production.
+    """
+    if not targets or any(t.endswith(".html") for t in targets):
+        return targets
+    if not any(word in instruction.lower() for word in PICTURE_WORDS):
+        return targets
+    return targets + ["index.html"]
+
+
 def normalize_patch_targets(
     targets: list[str] | None, available: list[str] | None = None
 ) -> list[str]:

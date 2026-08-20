@@ -39,7 +39,13 @@ rename them, do not invent parallel variants, and do not rely on element selecto
 - Header: `site-header`, `header-inner`, `logo`, `logo-text`, `main-nav`, `nav-list`,
   `nav-link`, `is-current` (on the current page's nav link)
 - Hero: `hero` (home page), `page-hero` (other pages), `hero-inner`, `hero-title`,
-  `hero-subtitle`
+  `hero-subtitle`, `hero-bg`
+  - `hero-bg` is how a photo goes *behind* the hero text instead of above it. Put it
+    alongside `hero` and set the picture inline on that same element:
+    `<section class="hero hero-bg" style="background-image: url('PHOTO_URL')">`. The
+    darkening overlay that keeps the heading readable is already defined for you — do not
+    add your own. When you use `hero-bg`, remove any `<img class="hero-image">` for that
+    same photo, or it will appear twice.
 - Sections: `section`, `section-alt` (alternate background band), `section-title`,
   `section-intro`
 - Cards: `card-grid`, `card`, `card-title`, `card-text`

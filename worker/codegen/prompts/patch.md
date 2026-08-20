@@ -7,7 +7,7 @@ it. Anything you alter beyond what was asked is damage, not improvement.
 ## The change requested
 
 $instruction
-
+$owner_words
 ## Rules — these matter more than anything else here
 
 1. **Return the complete file**, from its first line to its last, not a fragment or a diff.
@@ -25,9 +25,16 @@ $instruction
 8. Do not invent facts. Never add a phone number, email, address, price, opening hours,
    testimonial, award, statistic, founding date, or staff name that is not already in the file
    or given explicitly in the request above.
-9. If the requested change refers to something that is not present in this file, return the
-   file completely unchanged rather than inventing a place to apply it.
+9. **A name in the request may be wrong — the owner's intent is what counts.** The request
+   above was written by someone who could not see this file, so a class name, selector or
+   element it mentions may not exist here under that exact name. If so, find the thing the
+   owner actually means and change that. A real example: a request said `.hero-section`, this
+   stylesheet calls it `.hero`, and returning the file unchanged meant the owner was told
+   twice that their change could not be made.
+10. Only return the file completely unchanged when nothing in it plausibly corresponds to
+    what was asked — not merely because a name did not match.
 
+$reference
 ## Output format
 
 Reply with ONLY the file below, no explanation before or after. The marker lines must appear

@@ -24,6 +24,7 @@ def photo_placement_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="🏷 Use as my logo", callback_data="photo:logo")
     builder.button(text="🖼 Big picture at the top", callback_data="photo:hero")
+    builder.button(text="🌄 Behind the text at the top", callback_data="photo:background")
     builder.button(text="📷 Add to my photo gallery", callback_data="photo:gallery")
     builder.button(text="🙋 Next to my About text", callback_data="photo:about")
     builder.button(text="✖ Never mind", callback_data="photo:cancel")

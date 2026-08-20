@@ -76,7 +76,7 @@ CONTRACT_CLASSES = frozenset({
     "container",
     "site-header", "header-inner", "logo", "logo-text", "main-nav", "nav-list", "nav-link",
     "is-current",
-    "hero", "page-hero", "hero-inner", "hero-title", "hero-subtitle",
+    "hero", "page-hero", "hero-inner", "hero-title", "hero-subtitle", "hero-bg",
     "section", "section-alt", "section-title", "section-intro",
     "card-grid", "card", "card-title", "card-text",
     "steps", "step", "step-number", "step-title", "step-text",
@@ -201,6 +201,19 @@ PAGE_REQUIREMENTS = {
 
 class GenerationFailed(Exception):
     pass
+
+
+class EditNotApplied(GenerationFailed):
+    """A patch ran, cost tokens, and changed nothing at all.
+
+    Real case: an owner asked twice to put their photo behind the hero text. The picture
+    was an `<img>` in index.html, but only style.css was targeted, and the instruction
+    ("set hero background image opacity to 0.35") described a rule that did not exist. The
+    model correctly returned the stylesheet untouched -- and the pipeline then validated,
+    sandboxed, deployed and announced "your site is live!" for two consecutive versions
+    that were byte-identical to the one before. Silence would have been better than that;
+    saying so plainly is better still.
+    """
 
 
 def _strip_code_fence(text: str) -> str:
@@ -381,6 +394,9 @@ def _sanitize_files(files: dict[str, str]) -> dict[str, str]:
     }
 
 
+STYLESHEET_MARKER = "/* ---- generated ---- */"
+
+
 def _with_base_css(css: str) -> str:
     """Prepend the fallback stylesheet so a contract class can never end up unstyled.
 
@@ -389,7 +405,29 @@ def _with_base_css(css: str) -> str:
     to a real business (`find-dog`, missing `btn-primary`).
     """
     base = (Path(__file__).parent / "base.css").read_text(encoding="utf-8")
-    return f"{base}\n/* ---- generated ---- */\n{css}"
+    return f"{base}\n{STYLESHEET_MARKER}\n{css}"
+
+
+def _split_stylesheet(css: str) -> tuple[str, str]:
+    """Separate the fallback block from the design's own rules.
+
+    Both halves define the same class names, so the stored stylesheet contains every
+    contract class twice -- and the fallback copy, being first, loses every cascade. It is
+    dead weight that reads exactly like the real thing.
+
+    That cost an owner three consecutive edits: asked to enlarge and centre the hero text,
+    the model edited `.hero-title` and `.hero-subtitle` at lines 30-31, both overridden by
+    the real rules 150 lines below. Each edit changed bytes, passed all nine checks and
+    deployed, and the page looked identical every time.
+
+    Returns (prefix_including_marker, editable_rules); the prefix is "" for a stylesheet
+    that predates the marker, in which case the whole file is editable.
+    """
+    index = css.find(STYLESHEET_MARKER)
+    if index == -1:
+        return "", css
+    cut = index + len(STYLESHEET_MARKER)
+    return css[:cut], css[cut:].lstrip("\n")
 
 
 def _patch_similarity(before: str, after: str) -> float:
@@ -459,20 +497,54 @@ async def _generate(
     return {name: files[name] for name in expected}, usage
 
 
-def _patch_prompt(filename: str, content: str, instruction: str) -> str:
+def _patch_prompt(
+    filename: str,
+    content: str,
+    instruction: str,
+    user_message: str | None = None,
+    reference: str | None = None,
+) -> str:
+    # The instruction is written by a parser that has never seen this file, so the names in
+    # it are guesses. Carrying the owner's own words alongside it gives the model -- which
+    # *can* see the file -- something to fall back on when a guessed name doesn't exist.
+    owner_words = (
+        f'\nThe owner asked for this in their own words:\n\n"{user_message.strip()}"\n'
+        if user_message and user_message.strip()
+        else ""
+    )
+    # Read-only, not editable: these rules load before the file above and are the reason a
+    # value can look "already set" without appearing in the editable rules at all. Without
+    # seeing them the model has to guess the current size, and it guessed smaller.
+    reference_block = (
+        "\n## Defaults already in effect (read-only — you cannot change these)\n\n"
+        "These load BEFORE the file above, so anything the file above sets wins over them.\n"
+        "They are shown only so you can see what a value currently is. To change one, edit "
+        "or add a rule in the file above — never reply with these.\n\n"
+        f"```css\n{reference.strip()}\n```\n"
+        if reference and reference.strip()
+        else ""
+    )
     return Template(_read_prompt("patch.md")).safe_substitute(
-        filename=filename, file_content=content, instruction=instruction
+        filename=filename, file_content=content, instruction=instruction,
+        owner_words=owner_words, reference=reference_block,
     )
 
 
-async def _patch_one(filename: str, content: str, instruction: str) -> tuple[str, dict]:
+async def _patch_one(
+    filename: str,
+    content: str,
+    instruction: str,
+    user_message: str | None = None,
+    reference: str | None = None,
+) -> tuple[str, dict]:
     """Patch a single file, rejecting a response that restructured too much of it."""
     last_error = ""
     for attempt in (1, 2):
         # Applying a stated change to an existing file is mechanical work: the model was
         # spending ~80% of its output budget deliberating rather than writing the file.
         text, usage = await call_plain_completion(
-            _patch_prompt(filename, content, instruction), reduced_reasoning=True
+            _patch_prompt(filename, content, instruction, user_message, reference),
+            reduced_reasoning=True,
         )
         parsed = _parse_files(text)
         patched = parsed.get(filename) or (next(iter(parsed.values())) if len(parsed) == 1 else None)
@@ -583,6 +655,7 @@ async def patch_site_files(
     instruction: str,
     targets: list[str],
     *,
+    user_message: str | None = None,
     session: AsyncSession | None = None,
     owner_telegram_id: int | None = None,
     business_id: uuid.UUID | None = None,
@@ -603,17 +676,39 @@ async def patch_site_files(
             f"Nothing to patch: {targets} not among the stored files {sorted(files)}"
         )
 
+    # Hide the dead fallback block from the model entirely. Left visible, it is the first
+    # thing matching any selector it looks for, and an edit made there does nothing.
+    prefixes = {name: "" for name in wanted}
+    editable = {}
+    for name in wanted:
+        if name == STYLESHEET_FILE:
+            prefixes[name], editable[name] = _split_stylesheet(files[name])
+        else:
+            editable[name] = files[name]
+
     results = await asyncio.gather(
-        *(_patch_one(name, files[name], instruction) for name in wanted)
+        *(_patch_one(name, editable[name], instruction, user_message, prefixes[name])
+          for name in wanted)
     )
 
     patched = dict(files)
     usage = {"model": "", "input_tokens": 0, "output_tokens": 0, "requests": len(wanted)}
     for name, (content, part_usage) in zip(wanted, results):
+        if prefixes[name]:
+            content = f"{prefixes[name]}\n{content}"
         patched[name] = _sanitize_html(content) if name.endswith(".html") else content
         usage["model"] = part_usage["model"]
         usage["input_tokens"] += part_usage["input_tokens"]
         usage["output_tokens"] += part_usage["output_tokens"]
+
+    # If nothing in any targeted file moved, the edit did not happen -- usually because the
+    # instruction described something that isn't in the files it was given. Checked across
+    # all targets rather than per file, since a change spanning two files legitimately
+    # leaves one of them alone.
+    if all(patched[name] == files[name] for name in wanted):
+        raise EditNotApplied(
+            f"patch left {wanted} byte-identical; instruction did not match the file contents"
+        )
 
     drift = _style_drift(patched)
     if drift is not None:

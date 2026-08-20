@@ -15,7 +15,7 @@ import sys
 import uuid
 
 from bot_api.config import get_settings
-from bot_api.services.business_service import get_business_by_id
+from bot_api.services.business_service import get_business_by_id, get_live_files
 from bot_api.services.nl_edit import EditParseFailed, parse_edit_message
 from bot_api.services.redis_client import get_redis
 from bot_api.services.session import get_edit_context, push_edit_turn
@@ -70,11 +70,15 @@ async def run(business_id: str, messages: list[str], *, use_context: bool) -> No
             print(f"No business found with id {business_id}", file=sys.stderr)
             sys.exit(1)
 
+        # Production passes the live files so the parser can see the real page; testing
+        # without them would exercise a code path the bot never takes.
+        live_files = await get_live_files(session, business)
+
         for message in messages:
             print(f"\n> {message}")
             context = await get_edit_context(redis, business.id) if use_context else None
             try:
-                op, _usage = await parse_edit_message(message, business, context)
+                op, _usage = await parse_edit_message(message, business, context, live_files)
             except EditParseFailed as exc:
                 print(f"  EditParseFailed: {exc}")
                 continue

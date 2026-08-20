@@ -6,7 +6,11 @@ from aiogram import Router
 from aiogram.fsm.state import default_state
 from aiogram.types import Message
 
-from bot_api.services.business_service import get_business_by_id, list_businesses_for_owner
+from bot_api.services.business_service import (
+    get_business_by_id,
+    get_live_files,
+    list_businesses_for_owner,
+)
 from bot_api.services.edit_ops import (
     ValidationError,
     apply_edit_operation,
@@ -16,6 +20,7 @@ from bot_api.services.edit_ops import (
     patch_for_extra_instructions,
     patch_for_field_edit,
     patch_for_service_edit,
+    widen_targets_for_pictures,
 )
 from bot_api.services.nl_edit import EditParseFailed, parse_edit_message
 from bot_api.services.queue import enqueue_generation, enqueue_rollback
@@ -192,9 +197,12 @@ async def catch_all_edit(message: Message) -> None:
             await clear_pending_edit(redis, business.id)
 
         context = await get_edit_context(redis, business.id)
+        # The parser used to decide what to change without ever seeing the site, so every
+        # class name and every "is that already there?" was a guess.
+        live_files = await get_live_files(session, business)
         await message.answer("🧠 Got it — thinking about that...")
         try:
-            op, parse_usage = await parse_edit_message(raw_message, business, context)
+            op, parse_usage = await parse_edit_message(raw_message, business, context, live_files)
         except EditParseFailed:
             session.add(_log(business.id, telegram_user_id, raw_message, error="edit parsing failed"))
             await session.commit()
@@ -257,7 +265,8 @@ async def catch_all_edit(message: Message) -> None:
         if op["operation"] == "patch_site":
             instruction = (op.get("instruction") or "").strip()
             targets = normalize_patch_targets(
-                op.get("targets"), available=list(page_files_for(business.layout)) + ["style.css"]
+                widen_targets_for_pictures(instruction, op.get("targets") or []),
+                available=list(page_files_for(business.layout)) + ["style.css"],
             )
 
             # Refuse before spending anything. One such request cost 21,867 tokens across
@@ -291,7 +300,8 @@ async def catch_all_edit(message: Message) -> None:
             business_id, business_name = business.id, business.name
             await enqueue_generation(
                 business_id, trigger="edit",
-                patch={"instruction": instruction, "targets": targets},
+                patch={"instruction": instruction, "targets": targets,
+                       "user_message": raw_message},
             )
             await message.answer(
                 f"On it — {instruction[0].lower() + instruction[1:] if instruction else instruction}\n\n"
