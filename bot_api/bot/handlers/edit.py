@@ -26,6 +26,7 @@ from bot_api.services.nl_edit import EditParseFailed, parse_edit_message
 from bot_api.services.queue import enqueue_generation, enqueue_rollback
 from worker.codegen.builder import page_files_for
 from worker.codegen.quota import record_usage
+from worker.codegen.style_ops import StyleAlreadySet, StyleOpFailed, apply_style_changes
 from worker.tasks.deploy import delete_pages_project
 from bot_api.services.redis_client import get_redis
 from bot_api.services.session import (
@@ -215,6 +216,10 @@ async def catch_all_edit(message: Message) -> None:
             session, telegram_user_id, business.id, parse_usage["model"],
             parse_usage["input_tokens"], parse_usage["output_tokens"], kind="parse",
         )
+        # Carried into the job so the success message can report what the whole
+        # interaction cost. Reading the message is most of a style edit's bill now, and a
+        # figure that leaves it out is not a smaller number, it is a wrong one.
+        parse_tokens = parse_usage["input_tokens"] + parse_usage["output_tokens"]
 
         if op["operation"] == "not_an_edit":
             session.add(_log(business.id, telegram_user_id, raw_message, op=op))
@@ -262,6 +267,75 @@ async def catch_all_edit(message: Message) -> None:
             )
             return
 
+        # A pure style value. It is applied deterministically, so the whole thing can be
+        # tried right here against the live files: an owner asking for something that is
+        # already in force finds out in this reply instead of two minutes and one failed
+        # build later, which is the loop this bot spent two days stuck in.
+        if op["operation"] == "set_style":
+            changes = op.get("changes") or []
+            summary = (op.get("summary") or "").strip() or "update the styling"
+            if not live_files:
+                # Never built, or the first build failed: there is no stylesheet to edit,
+                # so build the site rather than asking which part of a page that does not
+                # exist yet they meant.
+                business.generation_status = "queued"
+                session.add(_log(business.id, telegram_user_id, raw_message, op=op, applied=True))
+                await session.commit()
+                business_id, business_name = business.id, business.name
+                await enqueue_generation(business_id, trigger="rebuild")
+                await message.answer(
+                    f"<b>{business_name}</b> hasn't been built yet, so I'm building it now — "
+                    "I'll message you when it's live, and then you can style it however you like."
+                )
+                return
+            try:
+                apply_style_changes(live_files, changes)
+            except StyleAlreadySet as exc:
+                session.add(_log(business.id, telegram_user_id, raw_message, op=op,
+                                 error=f"already set: {exc}"))
+                await session.commit()
+                await push_edit_turn(redis, business.id, raw_message,
+                                     {"rejected": f"nothing to do, already in force: {exc}"})
+                await message.answer(
+                    f"<b>{business.name}</b> already looks that way, so there was nothing "
+                    "to change and I haven't touched it.\n\nIf you'd like it to go "
+                    "further, tell me roughly how much and I'll push it past where it is "
+                    "now."
+                )
+                return
+            except StyleOpFailed as exc:
+                session.add(_log(business.id, telegram_user_id, raw_message, op=op,
+                                 error=f"style change rejected: {exc}"))
+                await session.commit()
+                logger.info("set_style rejected for %s: %s", business.id, exc)
+                await message.answer(
+                    "I couldn't work out exactly which part of the page you mean. Tell me a "
+                    "word you can see on it — a heading, a button label — and what you'd "
+                    "like it to look like, and I'll sort it."
+                )
+                return
+
+            entry = _log(business.id, telegram_user_id, raw_message, op=op, applied=True)
+            business.generation_status = "queued"
+            session.add(entry)
+            await session.flush()
+            edit_log_id = str(entry.id)
+            await session.commit()
+            await push_edit_turn(redis, business.id, raw_message,
+                                 {"applied": "set_style", "summary": summary})
+            business_id, business_name = business.id, business.name
+            await enqueue_generation(
+                business_id, trigger="edit",
+                patch={"style_changes": changes, "summary": summary,
+                       "user_message": raw_message, "edit_log_id": edit_log_id,
+                       "parse_tokens": parse_tokens},
+            )
+            await message.answer(
+                f"On it — {summary}.\n\nNothing else on your site changes. "
+                "I'll send you the new version shortly!"
+            )
+            return
+
         if op["operation"] == "patch_site":
             instruction = (op.get("instruction") or "").strip()
             targets = normalize_patch_targets(
@@ -292,8 +366,15 @@ async def catch_all_edit(message: Message) -> None:
                 )
                 return
 
+            # Flushed before the enqueue so the job carries the log row's id: without it
+            # nothing joins a message to the version it produced, and every one of the 19
+            # versions on the site that prompted this change had to be matched to its
+            # message by hand, on timestamps.
+            entry = _log(business.id, telegram_user_id, raw_message, op=op, applied=True)
             business.generation_status = "queued"
-            session.add(_log(business.id, telegram_user_id, raw_message, op=op, applied=True))
+            session.add(entry)
+            await session.flush()
+            edit_log_id = str(entry.id)
             await session.commit()
             await push_edit_turn(redis, business.id, raw_message,
                                  {"applied": "patch_site", "summary": instruction})
@@ -301,7 +382,8 @@ async def catch_all_edit(message: Message) -> None:
             await enqueue_generation(
                 business_id, trigger="edit",
                 patch={"instruction": instruction, "targets": targets,
-                       "user_message": raw_message},
+                       "user_message": raw_message, "edit_log_id": edit_log_id,
+                       "parse_tokens": parse_tokens},
             )
             await message.answer(
                 f"On it — {instruction[0].lower() + instruction[1:] if instruction else instruction}\n\n"

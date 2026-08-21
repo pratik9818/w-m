@@ -9,8 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot_api.logging_config import add_run_fields, log_event, start_run
 from bot_api.services.business_service import get_business_by_id
 from bot_api.services.openrouter_client import DailyLimitReached
+from bot_api.services.redis_client import get_redis
+from bot_api.services.session import correct_last_edit_turn
 from db.base import session_scope
-from db.models import Business, SiteVersion
+from db.models import Business, EditLog, SiteVersion
 from worker.codegen.builder import (
     EditNotApplied,
     GenerationFailed,
@@ -19,6 +21,7 @@ from worker.codegen.builder import (
     repair_files,
     spec_from_business,
 )
+from worker.codegen.style_ops import StyleAlreadySet, StyleOpFailed, apply_style_changes
 from worker.codegen.validate import failed as failed_checks
 from worker.codegen.validate import validate_files
 from worker.codegen.quota import FREE_TIER_TOKEN_LIMIT, QuotaExceeded, get_tokens_used
@@ -40,6 +43,28 @@ async def _live_files(session: AsyncSession, business: Business) -> dict[str, st
     )
     files = result.scalar_one_or_none()
     return files or None
+
+
+async def _record_no_change(business: Business, patch: dict | None) -> None:
+    """Tell the next parse that this edit changed nothing, so it stops repeating itself.
+
+    Best-effort by design: the owner has already been told what happened, and a Redis
+    problem here must not turn a clean "nothing to change" into a crashed job.
+    """
+    user_message = (patch or {}).get("user_message")
+    if not user_message:
+        return
+    try:
+        await correct_last_edit_turn(
+            get_redis(),
+            business.id,
+            user_message,
+            {"rejected": "that changed nothing -- the site already looked exactly like "
+                         "that. If they ask for it again they want it pushed further "
+                         "than it is now, not the same value repeated."},
+        )
+    except Exception:
+        logger.warning("could not record the no-change outcome for %s", business.id, exc_info=True)
 
 
 async def run_generation_pipeline(
@@ -69,6 +94,7 @@ async def run_generation_pipeline(
         session.add(site_version)
         business.generation_status = "generating"
         await session.commit()
+        await _link_edit_log(session, patch, site_version.id)
         add_run_fields(slug=business.slug, version=version_number)
         log_event(logger, "build.started")
         await notify_owner_progress(bot, business, "generating")
@@ -80,7 +106,16 @@ async def run_generation_pipeline(
             # brand-new site every time -- new colours, resequenced sections, reworded
             # copy -- which is exactly what owners experience as "it changed my whole
             # site when I asked for one small thing".
-            if patch and live_files and trigger != "rebuild":
+            if patch and patch.get("style_changes") and live_files and trigger != "rebuild":
+                # No model call at all. The values were decided by the parser, checked
+                # against the live stylesheet in the chat handler, and are applied here by
+                # editing the declarations in place -- so this route cannot truncate a
+                # file, cannot restyle something nobody asked about, and cannot come back
+                # byte-identical without saying so.
+                files, changed = apply_style_changes(live_files, patch["style_changes"])
+                usage = {"model": "", "input_tokens": 0, "output_tokens": 0, "requests": 0}
+                log_event(logger, "style.applied", changes=changed)
+            elif patch and patch.get("instruction") and live_files and trigger != "rebuild":
                 files, usage = await patch_site_files(
                     live_files,
                     patch["instruction"],
@@ -108,12 +143,27 @@ async def run_generation_pipeline(
             await _mark_failed(session, business, site_version, "quota", "token quota exceeded")
             await notify_owner_failure(bot, business, "quota")
             return
+        except StyleAlreadySet as exc:
+            # Every value asked for is already in force. Normally the chat handler catches
+            # this before anything is queued; reaching here means the site moved between
+            # the check and the build. Either way it is not a fault, so say what is
+            # actually set rather than apologising for a failure that did not happen.
+            await _mark_failed(session, business, site_version, "already_set", str(exc))
+            await notify_owner_failure(bot, business, "already_set", detail=str(exc))
+            await _record_no_change(business, patch)
+            return
+        except StyleOpFailed as exc:
+            await _mark_failed(session, business, site_version, "not_applied", str(exc))
+            await notify_owner_failure(bot, business, "not_applied")
+            await _record_no_change(business, patch)
+            return
         except EditNotApplied as exc:
             # Must precede GenerationFailed: it's a subclass, and this case is not a fault
             # in the site -- the change simply didn't land, and the owner needs to know
             # that rather than being congratulated on an unchanged site.
             await _mark_failed(session, business, site_version, "not_applied", str(exc))
             await notify_owner_failure(bot, business, "not_applied")
+            await _record_no_change(business, patch)
             return
         except GenerationFailed as exc:
             await _mark_failed(session, business, site_version, "generation", str(exc))
@@ -167,16 +217,36 @@ async def run_generation_pipeline(
         await notify_owner_progress(bot, business, "testing")
 
         stage_started = time.monotonic()
+        # An edit is measured against what it replaces: both versions are served in the
+        # same sandbox and photographed, so "did this change anything?" stops being a
+        # question about bytes and becomes one about pixels.
+        compare_against = live_files if trigger == "edit" else None
+        style_only = _is_stylesheet_only(patch)
         try:
-            report = await sandbox_test(files)
+            report = await sandbox_test(
+                files, previous_files=compare_against, require_visible_change=style_only
+            )
         except Exception as exc:
             logger.exception("run_generation_pipeline: sandbox test failed for %s", business_id)
             await _mark_failed(session, business, site_version, "unknown", str(exc))
             await notify_owner_failure(bot, business, "unknown")
             return
 
+        # PNG bytes: they belong in a Telegram message, not in a JSONB column.
+        screenshots = report.pop("screenshots", {}) or {}
         site_version.sandbox_report = report
         site_version.sandbox_status = "passed" if report["passed"] else "failed"
+
+        if _rendered_identically(report):
+            # The bytes moved and the page did not. Three real versions shipped this way,
+            # each announced as live, each looking exactly like the one before it.
+            await _mark_failed(
+                session, business, site_version, "not_applied",
+                "the new version renders exactly like the current one",
+            )
+            await notify_owner_failure(bot, business, "not_applied")
+            await _record_no_change(business, patch)
+            return
         if not report["passed"]:
             # One repair round on browser-only defects too, then re-test. Anything the
             # markup-level checks could see was already fixed before we got here.
@@ -191,7 +261,11 @@ async def run_generation_pipeline(
                 if repair_usage:
                     usage["input_tokens"] += repair_usage["input_tokens"]
                     usage["output_tokens"] += repair_usage["output_tokens"]
-                    report = await sandbox_test(files)
+                    report = await sandbox_test(
+                        files, previous_files=compare_against,
+                        require_visible_change=style_only,
+                    )
+                    screenshots = report.pop("screenshots", {}) or screenshots
                     site_version.sandbox_report = report
                     site_version.sandbox_status = "passed" if report["passed"] else "failed"
             except Exception:
@@ -251,7 +325,9 @@ async def run_generation_pipeline(
             tokens=usage["input_tokens"] + usage["output_tokens"],
         )
         await notify_owner_success(
-            bot, business, usage=usage, remaining=max(FREE_TIER_TOKEN_LIMIT - used, 0)
+            bot, business, usage=usage, remaining=max(FREE_TIER_TOKEN_LIMIT - used, 0),
+            screenshot=screenshots.get("after"),
+            parse_tokens=(patch or {}).get("parse_tokens", 0),
         )
 
 
@@ -266,7 +342,48 @@ CHECK_EXPLANATIONS = {
     "no_console_errors": "the page reported errors when it opened",
     "images_resolve": "an image on the page couldn't be loaded",
     "page_loads": "one of the pages didn't open properly",
+    "page_visibly_changed": "the new version looked exactly like the current one",
 }
+
+
+async def _link_edit_log(session: AsyncSession, patch: dict | None, version_id: uuid.UUID) -> None:
+    """Point the owner's message at the version it produced.
+
+    The column has existed since the first migration and had never once been written, so
+    none of the 19 versions on the site that prompted this work could be traced back to
+    the message that caused it without matching timestamps by hand.
+    """
+    edit_log_id = (patch or {}).get("edit_log_id")
+    if not edit_log_id:
+        return
+    try:
+        entry = await session.get(EditLog, uuid.UUID(str(edit_log_id)))
+        if entry is not None:
+            entry.triggered_version_id = version_id
+            await session.commit()
+    except Exception:
+        logger.warning("could not link edit_log %s to version", edit_log_id, exc_info=True)
+
+
+def _is_stylesheet_only(patch: dict | None) -> bool:
+    """Whether this edit touches nothing but the stylesheet.
+
+    A style change that renders identically to the version before it did nothing, with no
+    other explanation available. The same cannot be said of a page edit.
+    """
+    if not patch:
+        return False
+    if patch.get("style_changes"):
+        return True
+    return set(patch.get("targets") or []) == {"style.css"}
+
+
+def _rendered_identically(report: dict) -> bool:
+    """True when the before/after comparison ran and found no visible difference."""
+    return any(
+        check["name"] == "page_visibly_changed" and not check["passed"]
+        for check in report.get("checks", [])
+    )
 
 
 def _describe_checks(checks: list[dict]) -> str:

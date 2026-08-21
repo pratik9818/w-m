@@ -21,6 +21,8 @@ SANDBOX_TIMEOUT_SECONDS = 60
 READY_POLL_TIMEOUT_SECONDS = 15
 READY_POLL_INTERVAL_SECONDS = 0.5
 SERVER_SESSION_ID = "site-server"
+# Where the previous version is served from, inside the same static server.
+PREVIOUS_DIR = "__previous"
 CONTACT_HREF_PATTERN = re.compile(r"^(tel:|mailto:)\S+$")
 # Catches the "empty section heading with nothing under it" failure the prompt forbids --
 # a page that renders but says almost nothing is a defect, not a pass.
@@ -48,14 +50,26 @@ BROKEN_FIXTURE: dict[str, str] = {
 }
 
 
-async def sandbox_test(files: dict[str, str]) -> dict:
+async def sandbox_test(
+    files: dict[str, str],
+    previous_files: dict[str, str] | None = None,
+    require_visible_change: bool = False,
+) -> dict:
     """Serve `files` in an isolated Daytona sandbox and smoke-test them with Playwright.
 
-    Returns a report shaped like the (currently unused) site_versions.sandbox_report
-    column: {"passed": bool, "checks": [...], "console_errors": [...]}.
+    Returns {"passed": bool, "checks": [...], "console_errors": [...], "screenshots": {...}}.
+    The screenshots hold raw PNG bytes and must be popped off before the report is stored
+    in site_versions.sandbox_report, which is JSONB.
+
+    When `previous_files` is given, the old version is served alongside the new one and
+    both are photographed. With `require_visible_change`, a rendering identical to the
+    previous version becomes a failed check -- the only one here that asks the question
+    the owner actually cares about, *did anything change?* The other nine all passed,
+    repeatedly, on versions that were pixel-for-pixel identical to the one before.
     """
     checks: list[dict] = []
     console_errors: list[str] = []
+    screenshots: dict = {}
     sandbox = None
     daytona = AsyncDaytona(DaytonaConfig(api_key=get_settings().daytona_api_key))
 
@@ -79,6 +93,17 @@ async def sandbox_test(files: dict[str, str]) -> dict:
         await sandbox.fs.create_folder(site_dir, "755")
         for filename, content in files.items():
             await sandbox.fs.upload_file(content.encode("utf-8"), f"{site_dir}/{filename}")
+
+        # The previous version goes in a subfolder of the same server, so one sandbox and
+        # one browser can photograph both. Nothing here is ever deployed -- the deploy
+        # step uploads the `files` dict, not the sandbox.
+        if previous_files:
+            previous_dir = f"{site_dir}/{PREVIOUS_DIR}"
+            await sandbox.fs.create_folder(previous_dir, "755")
+            for filename, content in previous_files.items():
+                await sandbox.fs.upload_file(
+                    content.encode("utf-8"), f"{previous_dir}/{filename}"
+                )
 
         await sandbox.process.create_session(SERVER_SESSION_ID)
         await sandbox.process.execute_session_command(
@@ -113,6 +138,9 @@ async def sandbox_test(files: dict[str, str]) -> dict:
             # 696s pipeline, and the pages are entirely independent of each other.
             results = await asyncio.gather(
                 *(_check_page(browser, base_url, name, files) for name in pages)
+            )
+            after_shots, before_shots = await _capture_versions(
+                browser, base_url, pages, previous_files
             )
             await browser.close()
 
@@ -166,13 +194,87 @@ async def sandbox_test(files: dict[str, str]) -> dict:
         checks.append(
             {"name": "html_well_formed", "passed": not malformed, "detail": malformed}
         )
+
+        changed_pages = _visibly_changed(before_shots, after_shots)
+        # Only a stylesheet-only edit can be judged on pixels alone, so only that caller
+        # asks for the check. A page edit may legitimately render identically -- a link
+        # repointed, a phone number changed behind the same words -- and failing those
+        # would trade one false report for another.
+        if before_shots and require_visible_change:
+            checks.append({
+                "name": "page_visibly_changed",
+                "passed": bool(changed_pages),
+                "detail": changed_pages or "every page renders exactly as it did before",
+            })
+        focus = changed_pages[0] if changed_pages else pages[0]
+        screenshots = {
+            "page": focus,
+            "after": (after_shots.get(focus) or (None, None))[0],
+            "before": (before_shots.get(focus) or (None, None))[0],
+        }
     finally:
         if sandbox is not None:
             await sandbox.delete()
         await daytona.close()
 
     passed = bool(checks) and all(c["passed"] for c in checks)
-    return {"passed": passed, "checks": checks, "console_errors": console_errors}
+    return {
+        "passed": passed,
+        "checks": checks,
+        "console_errors": console_errors,
+        "screenshots": screenshots,
+    }
+
+
+async def _capture_versions(
+    browser, base_url: str, pages: list[str], previous_files: dict[str, str] | None
+) -> tuple[dict, dict]:
+    """Photograph every page of the new version, and of the old one where it exists."""
+    after = dict(
+        zip(pages, await asyncio.gather(*(
+            _capture(browser, f"{base_url}/{name}") for name in pages
+        )))
+    )
+    if not previous_files:
+        return after, {}
+    shared = [name for name in pages if name in previous_files]
+    before = dict(
+        zip(shared, await asyncio.gather(*(
+            _capture(browser, f"{base_url}/{PREVIOUS_DIR}/{name}") for name in shared
+        )))
+    )
+    return after, before
+
+
+async def _capture(browser, url: str) -> tuple[bytes, bytes] | None:
+    """(viewport PNG, full-page PNG) for one URL, or None if it would not render.
+
+    The viewport shot is what the owner is sent; the full-page shot is what gets compared,
+    because a change below the fold is still a change.
+    """
+    page = await browser.new_page(viewport={"width": 1280, "height": 900})
+    try:
+        await page.goto(url, wait_until="networkidle", timeout=30000)
+        return await page.screenshot(), await page.screenshot(full_page=True)
+    except Exception:
+        logger.warning("could not screenshot %s", url, exc_info=True)
+        return None
+    finally:
+        await page.close()
+
+
+def _visibly_changed(before: dict, after: dict) -> list[str]:
+    """Pages whose rendering differs from the previous version.
+
+    Byte comparison of two PNGs taken by the same browser in the same run: identical
+    input renders to identical output, so a difference here is a real one. This is what
+    would have caught the three edits that changed bytes in a stylesheet block the
+    cascade ignores -- all three deployed, all nine checks green, page identical.
+    """
+    return [
+        name for name, shot in before.items()
+        if shot and after.get(name) and shot[1] != after[name][1]
+    ]
 
 
 async def _check_page(browser, base_url: str, page_name: str, files: dict[str, str]) -> dict:

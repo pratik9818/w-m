@@ -1,6 +1,15 @@
+import logging
+
 from aiogram import Bot
+from aiogram.types import BufferedInputFile
 
 from db.models import Business
+from worker.codegen.quota import AVG_EDIT_COST
+
+logger = logging.getLogger(__name__)
+
+# Telegram rejects a caption over 1024 characters outright.
+CAPTION_MAX_LEN = 1024
 
 # Written for a shop owner, not an engineer: they should never have to wonder what a word
 # like "sandbox", "deploy" or "quality checks" means, or whether their live site is at risk.
@@ -28,13 +37,28 @@ FAILURE_COPY = {
         "{name} is written and looks good, but I couldn't get it online just now. "
         "Your current site is untouched — please try again in a few minutes."
     ),
-    # The edit ran but changed nothing -- almost always because it was aimed at something
-    # that isn't on the page. Asking for it in different words genuinely does help, so say
-    # that rather than implying a fault the owner can do nothing about.
+    # The edit ran and changed nothing. The old copy here said "I couldn't work out how to
+    # make that change", which was untrue in the common case and cost a real owner two
+    # days: their site already looked exactly as they were describing, and being told six
+    # times that it could not be done sent them round the same loop with the same words.
+    # Say what actually happened, and give them the two ways forward.
+    # Not a failure at all: the site already says what was asked for. Kept separate
+    # from "not_applied" because the owner needs the actual value to argue with -- being
+    # told "already done" without being told *what* is already done is what turned one
+    # misunderstanding into six identical messages.
+    "already_set": (
+        "That's already how <b>{name}</b> is set, so there was nothing to change and I "
+        "haven't touched your site."
+    ),
     "not_applied": (
-        "I couldn't work out how to make that change to {name}, so nothing was altered — "
-        "your site is exactly as it was. Could you tell me again in different words? "
-        "It helps to say which part of the page you mean and what you'd like it to look like."
+        "I compared {name} against what you asked for and there was nothing left to "
+        "change — it already looks that way, so I've left your site exactly as it is "
+        "and published nothing.\n\n"
+        "If you wanted it to go <b>further</b>, tell me roughly how much — \"twice as "
+        "big\", \"fill the whole screen\", \"much darker\" — and I'll push it past "
+        "where it is now.\n\n"
+        "If you meant a different part of the page, tell me a word you can actually see "
+        "on that part and I'll find it."
     ),
     "interrupted": (
         "Sorry — the update to {name} stopped partway through. Your site is still live and "
@@ -56,20 +80,44 @@ FAILURE_COPY = {
 
 
 async def notify_owner_success(
-    bot: Bot, business: Business, usage: dict | None = None, remaining: int | None = None
+    bot: Bot,
+    business: Business,
+    usage: dict | None = None,
+    remaining: int | None = None,
+    screenshot: bytes | None = None,
+    parse_tokens: int = 0,
 ) -> None:
     text = f"🎉 <b>{business.name}</b> is live! {business.deployment_url}"
     if usage and remaining is not None:
         # Show both halves: the raw cost of *this* build (asked for directly -- an owner
         # watching their allowance wants to see what each change actually spent) and the
         # same figure translated into remaining changes, which is the part they can act on.
-        spent = usage["input_tokens"] + usage["output_tokens"]
-        edits_left = remaining // 9_000
+        built = usage["input_tokens"] + usage["output_tokens"]
+        spent = built + parse_tokens
+        edits_left = remaining // AVG_EDIT_COST
+        text += f"\n\n📊 This update used <b>{spent:,}</b> tokens."
+        if parse_tokens and not built:
+            # Worth saying, because it is the difference between this route and the old
+            # one -- but the total above is the number they are actually charged.
+            text += " Reading your message was the whole cost: the change itself was made directly, with no rebuild."
         text += (
-            f"\n\n📊 This update used <b>{spent:,}</b> tokens."
             f"\n{remaining:,} left — room for about <b>{edits_left}</b> more changes."
             f"\nSend /token for details."
         )
+    # A link is not evidence. An owner who cannot see what changed assumes nothing did --
+    # that is how six identical requests happened -- so the new version is shown, not
+    # described. Falls back to the plain message if Telegram rejects the image.
+    if screenshot and len(text) <= CAPTION_MAX_LEN:
+        try:
+            await bot.send_photo(
+                business.owner_telegram_id,
+                BufferedInputFile(screenshot, filename="your-site.png"),
+                caption=text,
+            )
+            return
+        except Exception:
+            logger.warning("could not send the preview image, sending text instead", exc_info=True)
+
     await bot.send_message(business.owner_telegram_id, text)
 
 

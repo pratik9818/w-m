@@ -193,6 +193,173 @@ Final state verified: `site_versions` v5 `status='live'`, `sandbox_status='passe
 - **Fabrication cannot be fully automated away.** The prompt bans invented narrative and there are now targeted greps for `founder` / `early tester` / `since YYYY` / placeholders, but generated copy still deserves a human read before a site is treated as client-ready.
 - Each build is 3 API calls (2 for a content edit) against OpenRouter's free 50/day — roughly 16–25 builds per day. A one-time \$10 top-up raises this to 1,000/day.
 
+## Part 7 — The six-message loop: state, determinism, verification (done, verified live)
+
+**The incident this part exists for.** One owner sent the same message six times over two
+days — "increase the height of that section and bold the text" — and every attempt after
+the first came back as *"I couldn't work out how to make that change."* The change had
+already been made. `.hero` was `min-height: 800px` from the first attempt and `.hero-title`
+is an `<h1>`, which is bold before any rule touches it. The parser could see the shape of
+the site but not one style value, so each repeat re-issued the identical instruction, the
+patch returned the file untouched, and `EditNotApplied` was reported to the owner as a
+refusal. Three earlier versions in the same sequence *did* move bytes and shipped green
+while looking identical: one set the heading to a flat `32px` when it was rendering at
+48px, one enlarged the sub-heading instead of the heading, and three wrote into the
+`base.css` fallback block, which loses every cascade it takes part in.
+
+**What was actually wrong, in order of blame:**
+
+1. **The planner was blind to state.** `outline.py` described structure only.
+2. **The planner emitted English prose** and a second model had to re-find the element in
+   a 12KB file and rewrite the whole thing. Every mechanical failure lived in that gap.
+3. **Success meant "bytes moved"**, so an edit that changed nothing visible deployed and
+   was announced.
+4. **State was written optimistically.** `handlers/edit.py` recorded `applied: patch_site`
+   at *enqueue* time, so the next parse was told the previous attempt had succeeded.
+5. **Nothing was measured**, so nothing protected fix #12 from breaking fix #3.
+
+**New modules**
+
+- `worker/codegen/css_values.py` — folds the stored stylesheet into the values actually in
+  force: `var()` resolved against `:root`, rem converted to px, `clamp()` annotated with
+  what it renders as ("renders between 28px and 48px"), generated rules winning over the
+  fallback block, media-query values flagged but never mistaken for the desktop value.
+  Appended to the parser's map by `outline_site()`. ~1,000 tokens, no API call.
+- `worker/codegen/style_ops.py` — `apply_style_changes()` applies `{selector, property,
+  from, value}` by editing the declaration in place. Only the generated half is editable,
+  only plain class selectors are addressable, only whitelisted properties are writable
+  (a misspelling like `colour` parses, applies nothing, and would look exactly like the
+  silent no-ops this replaces), and values that could close the rule are refused. Every
+  change is verified against the file afterwards; a request whose values are all already
+  in force raises `StyleAlreadySet`, which is a distinct signal, not a failure.
+- `evals/` — `run_evals.py` scores the parser against ten real owner messages on a frozen
+  fixture of a real site (`export_fixture.py` makes more). Two rules apply to every case:
+  a `clarify` question may never contain developer jargon, and a named selector must exist
+  on the site. Exits non-zero, so it can gate a prompt change.
+- `tests/` — 24 unit tests over the deterministic parts (previously an empty directory).
+
+**Changed**
+
+- `bot_api/services/nl_edit.py` — new `set_style` operation, preferred over `patch_site`
+  for any pure style value; prompt sections for "is it already true?" and what
+  bigger/taller/bolder have to mean against a value that is already there.
+- `bot_api/bot/handlers/edit.py` — dry-runs `apply_style_changes` against the live files
+  before queueing anything, so "that's already how it looks" is answered *in the reply*
+  instead of two minutes and one failed build later. Flushes the `edit_log` row and passes
+  its id to the worker.
+- `worker/tasks/generate.py` — three build routes (deterministic style / prose patch /
+  rebuild), `_link_edit_log()` fills `edit_log.triggered_version_id` (a column that had
+  never once been written), and a version that renders identically to the current one is
+  stopped before deploy.
+- `worker/tasks/sandbox.py` — serves the previous version from `__previous/` in the same
+  sandbox, photographs every page of both, and adds a tenth check,
+  `page_visibly_changed`. The viewport shot of the changed page is returned for Telegram.
+- `worker/tasks/notify.py` — the success message now carries the picture; `not_applied`
+  says what actually happened; new `already_set` copy names the value that is already in
+  force.
+- `bot_api/services/session.py` — `correct_last_edit_turn()` rewrites the optimistic
+  "applied" record when the build turns out to have changed nothing.
+
+**Verified live**
+
+- The exact message that caused the loop, parsed against the real site: before, `set .hero
+  min-height to 800px and .hero-title font-weight to bold` (a no-op); after, `increase the
+  hero section's min-height from 800px to 1200px and set the hero title's font-weight to
+  900`. Run through the real patch step, it changed those two declarations and nothing else.
+- Before/after rendering against real Daytona, both ways round: a genuine change reports
+  `page_visibly_changed passed=True detail=['index.html']`, and an identical file set
+  reports `passed=False, "every page renders exactly as it did before"` — with the other
+  nine checks green in both runs, which is exactly how the invisible versions shipped.
+- Eval suite: 10/10 (one case initially failed on a bad assertion — `forbid_text` was
+  matching the `from` field, which is *supposed* to hold the current value — fixed in the
+  runner, not the prompt).
+
+**Known gaps**
+
+- The prose-patch route still cannot distinguish "already true" from "I couldn't find that
+  part": both come back as an unchanged file. The copy covers both honestly rather than
+  guessing.
+- Prompt rules that matter should each have a mechanical counterpart. "Never invent a
+  phone number" ought to be an assertion that every `tel:` link appears in the business
+  data, not a sentence the model is asked to remember.
+- Context is still pushed, not pulled: ~7,500 input tokens on every message including
+  "thanks". A lookup tool is the eventual answer and is deliberately not urgent.
+
+## Part 8 — Art direction: making the sites stop looking the same (built, live test blocked)
+
+**The complaint.** "The websites are so generic in design, it looks old fashioned — and the
+same prompt on claude.ai gives an amazing result." Reading the code, the model was the
+smaller half of the answer. Four causes, three of them ours:
+
+1. **The stylesheet was written blind.** `_stylesheet_prompt` passed `DESIGN_SPEC_FIELDS` —
+   six fields, not one word of the page it was styling. A designer who cannot see the
+   content writes defensively generic CSS.
+2. **Fonts were banned.** `_contract.md` said "No external fonts… Use system font stacks",
+   enforced by nothing in code. Typography is most of what reads as design quality, and
+   `system-ui` on every site is the strongest possible "default template" signal.
+3. **The art direction was three sentences per theme**, and the `modern` one
+   ("white background, one confident accent color, sans-serif throughout, generous
+   whitespace, understated borders/shadows") is a description of the default template.
+4. The model (`nemotron-3-super-120b:free`) is weaker at design than a frontier model —
+   but the prompt ceiling bound first. Output budget was never the constraint:
+   `GENERATION_MAX_TOKENS = 32000` against ~9KB of CSS covering 40+ components.
+
+**New module** — `worker/codegen/design_brief.py`. One short forced-tool call before the
+build fans out, picking a palette, a typeface pairing and a **signature device** grounded
+in this business, then handed to *every* call in the build so the pages and the stylesheet
+share one direction instead of each inventing its own. Nothing is trusted on the model's
+word:
+
+- `display_font`/`body_font` are checked against ~35 families that really are on Google
+  Fonts. A hallucinated family does not fail loudly — the link 404s and the page silently
+  renders in Times New Roman — so an unknown name falls back to the theme's.
+- `contrast()` implements the WCAG ratio; ink that scores under 4.5 against the background
+  is replaced rather than published, and `accent_ink` (text on the accent band) is
+  *computed* as black or white instead of asked for. "Make sure text has strong contrast"
+  was a prompt rule for months, and prompt rules do not hold.
+- `muted` and `border` are derived by mixing, so the palette is coherent by construction.
+- Any failure returns a hand-picked, contrast-checked `FALLBACK_BRIEFS[theme]`. A build
+  must never die for want of art direction — verified live when the daily request cap hit
+  mid-test and all three businesses fell back cleanly.
+
+**Changed**
+
+- `design_tokens_css()` writes the palette and both font families into the stylesheet as
+  real CSS, emitted just below the `/* ---- generated ---- */` marker so the model's own
+  rules still win — and so a later `set_style` edit can still see and change any of it.
+- `shell.render_page()` puts the Google Fonts `<link>` in every page head. Code, not
+  prompt, for the same reason as above.
+- `_contract.md`: the font ban is now "use these two, no others"; extra classes are allowed
+  **alongside** a contract class (`card card-featured`) so a business can have what the
+  fixed list does not cover, without breaking the CSS/HTML agreement.
+- `stylesheet.md`: the design bar names what generic looks like and forbids it — identical
+  sections, white cards with the same radius and shadow, the accent only on buttons, timid
+  type — and asks for a real type scale with `clamp()` and deliberate asymmetry.
+- `pages.md`: the required content is now "the floor, not the shape". Section order can
+  suit the trade, and a component with nothing real to put in it should be left out rather
+  than filled with an empty third card.
+- `THEME_GUIDANCE` is deleted; `THEME_MOODS` in `design_brief.py` replaces it as a starting
+  point for the brief rather than the whole design.
+
+**Verified**
+
+- 6 offline wiring tests (`tests/test_build_wiring.py`, both model calls stubbed): the
+  fonts reach every page head, the palette lands in the stylesheet below the marker, both
+  prompts carry the identical brief, and the brief's tokens are folded into the build's
+  usage rather than billed twice. 35 unit tests pass in total.
+- Fallback briefs are contrast-checked in both directions (ink/bg 14.6 and 16.7,
+  accent-ink/accent 9.3 and 6.1 on the classic and bold fallbacks).
+
+**Blocked, not done**
+
+- **The live before/after rebuild of `cryptopulse-token` has not run.** OpenRouter's free
+  tier is 50 requests/day and today's were spent (two full eval runs at 10 apiece, plus the
+  day's real edits and builds). Everything above is wired and unit-tested; none of it has
+  yet produced a real site.
+- A build now costs **one more request than before** — brief + 2 page groups + stylesheet =
+  4 for a multipage site, 3 for a landing page — so the free tier is ~12 builds a day. The
+  \$10 top-up to 1,000/day matters more now than it did.
+
 ## Not started yet (later parts, per the phased plan)
 
 - **Part 4c — Shared contact-form backend**: `POST /api/{business_id}/contact` on `bot_api`, persists submissions, notifies the owner. Blocked on Part 1's `bot_api` Vercel deployment (needs a real domain for generated sites' `<form action>` to point at).
@@ -262,3 +429,17 @@ Final state verified: `site_versions` v5 `status='live'`, `sandbox_status='passe
 | 58 | Run Part 6 verification against real infra (OpenRouter → Daytona → Cloudflare) | ✅ done (v5 live, 121s, 9/9 checks) |
 | 59 | Re-test whether `extra_instructions` colour requests now apply | ⬜ not done |
 | 60 | Test Part 4b v2 testimonials guardrail + infeasible-request handling | ⬜ not done |
+| 61 | Build `css_values.py` (resolved style digest for the parser) | ✅ done |
+| 62 | Build `style_ops.py` + the `set_style` operation (no model call) | ✅ done |
+| 63 | Add before/after rendering + `page_visibly_changed` to the sandbox | ✅ done |
+| 64 | Send the owner a screenshot with the success message | ✅ done |
+| 65 | Stop optimistic state: correct the edit context, fill `triggered_version_id` | ✅ done |
+| 66 | Build `evals/` (10 real messages against a frozen fixture) + `tests/` | ✅ done |
+| 67 | Give the parser a lookup tool instead of pre-computed context | ⬜ not done |
+| 68 | Turn the remaining prompt-only guarantees into code checks | ⬜ not done |
+| 69 | Build `design_brief.py` (palette, typefaces, signature device per business) | ✅ done |
+| 70 | Allow Google Fonts; inject the link and the palette as code, not prompt | ✅ done |
+| 71 | Rewrite the stylesheet design bar + let pages vary by business | ✅ done |
+| 72 | Offline wiring tests for the brief (`tests/test_build_wiring.py`) | ✅ done |
+| 73 | Rebuild a real site and compare the result before/after | ⬜ blocked on the daily request cap |
+| 74 | Consider the stronger model for the stylesheet call only | ⬜ not done |

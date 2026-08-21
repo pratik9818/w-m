@@ -5,7 +5,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import TokenUsage
 
-FREE_TIER_TOKEN_LIMIT = 1_000_000
+FREE_TIER_TOKEN_LIMIT = 2_000_000
+
+# Measured from real usage rows, and counting the whole interaction rather than just the
+# build: reading the owner's message costs 8-12k on its own, which the old figures left
+# out entirely, so "how many changes can I still make" read about twice as generous as it
+# really was. A style change is now parse-only; a reworded page is parse plus rewrite.
+AVG_BUILD_COST = 30_000
+AVG_EDIT_COST = 15_000
 
 
 class QuotaExceeded(Exception):

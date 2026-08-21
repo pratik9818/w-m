@@ -39,6 +39,12 @@ So each file looks exactly like this, and nothing else:
 - Use the shared class contract for every structure. Wrap section content in `container`.
 - Only ever link to `index.html`, `about.html`, `services.html` or `contact.html`. Never link
   to a page or an anchor that does not exist.
+- **Write for this business, not for the template.** The required content below is the floor,
+  not the shape: choose the section order that suits this trade, give the most important thing
+  the most room, and leave out a component that has nothing real to put in it. A business with
+  two services should not be given a three-card grid with an empty third card.
+- Where you add a modifier class alongside a contract class, keep the contract class first and
+  name the modifier for what it is (`card card-featured`, `section section-gallery`).
 
 ## Required content
 

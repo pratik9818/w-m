@@ -20,6 +20,7 @@ from bot_api.services.session import (
     set_pending_edit,
 )
 from db.base import session_scope
+from worker.codegen.quota import AVG_BUILD_COST, AVG_EDIT_COST
 from db.models import Business, SiteVersion
 from worker.codegen.quota import KIND_LABELS, get_quota_summary
 
@@ -83,11 +84,6 @@ async def cmd_status(message: Message) -> None:
     await message.answer("\n\n".join(blocks))
 
 
-# Measured from real builds: a full site runs ~20-24k and a patched edit ~7-12k. Used only
-# to translate the allowance into "how many more websites/changes", which is the only form
-# of this number an owner can act on.
-AVG_BUILD_COST = 22_000
-AVG_EDIT_COST = 9_000
 
 
 def _bar(percent: float, width: int = 10) -> str:

@@ -39,6 +39,7 @@ Everything else the owner is likely to ask for IS possible -- including FAQ pane
 
 - update_business_info: name/tagline/about/phone/email/address/theme/hours -- only include fields that changed. theme must be exactly one of: classic, modern, bold. Set drafted=true if you composed the tagline/about text yourself rather than using the owner's own words.
 - add_service / update_service / remove_service: refer to an existing service by its current name exactly as shown above.
+- set_style: THE DEFAULT for any change that is purely a style value on something already on the page -- taller, shorter, bigger, smaller, bolder, lighter, a different colour, more or less spacing, centred, rounded corners, a shadow. It edits the one value in place, so it is instant, exact, free, and cannot disturb anything else. Take `selector` and `from` straight from the map above; never invent a class name.
 - patch_site: THE DEFAULT for anything about a specific visible thing on the existing site -- rename or reword a button/heading/label, move an element, remove an element, change where a link points, change a colour. The site is already live and will be edited surgically, so describe the change precisely and completely enough to act on without seeing the chat (e.g. "rename the 'Get started' button to 'Let's build' and point it at https://t.me/teko21bot"), and list the files it affects in `targets`.
 - update_extra_instructions: ONLY for a durable, site-wide design preference the owner wants remembered and reapplied whenever the site is rebuilt from scratch (e.g. "always use a green navbar"). Do NOT use this for a one-off change to something already on the site -- that is patch_site. `mode` is "add" (default) or "clear".
 - change_layout: anything about HOW MANY PAGES the site has -- "keep only one page", "remove the other pages", "make this a landing page", "I want separate pages again". patch_site physically cannot add or delete pages, so never send those requests there.
@@ -71,6 +72,71 @@ Genuinely not possible today, and worth saying plainly (in ordinary words, witho
 If the owner asks for several things in one message, your single operation must cover ALL of them. Real failure: "Remove navbar section and instead of red bg, make it light gray" was turned into an instruction about the colour only, so the navbar stayed and the owner paid for an edit that did half of what they asked.
 
 If you cannot cover everything in one operation, call clarify instead: say plainly which part you can do and which you cannot, and ask them to confirm. Never guess, and never quietly do the easier half. If you are unsure what an instruction refers to -- which element, which section, which page -- ask rather than picking something and hoping.
+
+## set_style or patch_site?
+
+Use **set_style** when the thing already exists on the page and only a value about how it
+looks is changing. Height, width, size, weight, colour, background colour, spacing,
+padding, alignment, corner radius, shadow: all set_style. This is most of what owners
+ask for, and it is applied without a model rewriting the file, so it cannot go wrong in
+the ways the old route did.
+
+Use **patch_site** when the page's content or structure changes: wording, a new or
+removed element, a link pointing somewhere else, a picture moving, an FAQ that needs
+rebuilding.
+
+If a request needs both -- "make the button say Book now and make it green" -- use
+patch_site and describe both parts. Never split one request across two operations, and
+never do the easier half.
+
+## Before anything else: is it already true?
+
+The map above now includes the styling values actually in force on the live site right
+now. Read them before you decide anything.
+
+If the site already has what the owner is describing, do NOT send the same instruction
+again. Applying a change that is already applied changes nothing, the build is rejected,
+and the owner is told "I couldn't work out how to make that change" -- which reads as a
+flat refusal of something they can plainly see needs doing.
+
+A real failure, and the reason this section exists: an owner asked six times across two
+days to make the top section taller and its heading bold. After the very first attempt
+the section was already 800px tall and the heading was already bold. Every later attempt
+re-sent "set .hero min-height to 800px and .hero-title font-weight to bold", changed
+nothing, failed, and told them it could not be done. Six charges, two days, no progress,
+and by the end they were typing raw code into the chat out of frustration.
+
+When what they are asking for is already in force, choose one -- never repeat it:
+
+- **They are asking again, or say it did not work.** Then they want MORE of it. Send a
+  patch_site instruction with a value clearly beyond the current one, and name both
+  values in the instruction so it cannot be mistaken for the same change again -- e.g.
+  "the hero is already min-height 800px and that is not enough for the owner: make it
+  1200px". Add a short note in the same instruction about why it may have looked
+  unchanged, if you can see the reason.
+- **It is the first time they have asked and it is already that way.** Call clarify. Tell
+  them plainly, in ordinary words and without naming any code, that it already looks that
+  way -- "your top section is already about twice the height of a normal one and the
+  heading is already bold" -- and ask what they would like instead. Never quietly re-send
+  it.
+
+## What "bigger", "taller" and "bolder" have to mean
+
+Never send a value that is smaller than the current one when the owner asked for more.
+
+A real failure: the heading was set to a size that renders up to 48px on a laptop, and
+"increase the font size" was turned into a flat 32px -- a third SMALLER. The owner
+replied "font size not increased", and the next attempt enlarged the paragraph underneath
+instead, so that site now has a sub-heading bigger than the heading above it.
+
+- Read the current value out of the map and pick one clearly beyond it, same direction.
+- Where the map says a value "renders between 28px and 48px", you must beat the TOP of
+  that range, not the bottom.
+- Headings are already bold. Asking for bold on a heading changes nothing a visitor can
+  see -- if they want it heavier say 800 or 900, and if they only want it to stand out
+  more, say so and offer a size or colour change instead.
+- Name the one element you mean. Enlarging the sub-heading when the owner meant the
+  heading is worse than doing nothing, because it leaves the page looking wrong.
 
 ## Writing a patch_site instruction
 
@@ -130,6 +196,59 @@ UPDATE_EXTRA_INSTRUCTIONS_TOOL = {
                 "'clear' (wipe all preferences; doesn't need `instructions`).",
             },
         },
+    },
+}
+
+SET_STYLE_TOOL = {
+    "name": "set_style",
+    "description": (
+        "Change one or more style values on something already on the page: size, weight, "
+        "colour, spacing, height, width, alignment, corner radius, shadow. Applied exactly "
+        "and instantly by editing the one line that holds the value -- no rewriting, no "
+        "risk to the rest of the site, and it costs the owner nothing. ALWAYS prefer this "
+        "over patch_site when the change is purely a style value on an existing element."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "changes": {
+                "type": "array",
+                "description": "One entry per value being changed; cover everything the owner asked for.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "selector": {
+                            "type": "string",
+                            "description": "A plain class selector taken from the map above, e.g. .hero "
+                            "or .hero-title. Never a guess, never a compound like .hero .title.",
+                        },
+                        "property": {
+                            "type": "string",
+                            "description": "The style property, e.g. min-height, font-size, font-weight, "
+                            "color, background-color, padding, text-align.",
+                        },
+                        "from": {
+                            "type": "string",
+                            "description": "The value the map says is in force right now, if any. Used to "
+                            "confirm the change is a real one rather than the value it already has.",
+                        },
+                        "value": {
+                            "type": "string",
+                            "description": "The new value, e.g. 1200px. Where the owner asked for more of "
+                            "something, this must be clearly beyond `from`, not equal to it.",
+                        },
+                    },
+                    "required": ["selector", "property", "value"],
+                },
+            },
+            "summary": {
+                "type": "string",
+                "description": "What this does in the owner's everyday words, with no code, no class "
+                "names and no property names in it -- e.g. 'make the top section taller and the "
+                "heading heavier'. It is shown to them as-is.",
+            },
+        },
+        "required": ["changes", "summary"],
     },
 }
 
@@ -247,6 +366,7 @@ TOOLS = [
     UPDATE_SERVICE_TOOL,
     REMOVE_SERVICE_TOOL,
     UPDATE_EXTRA_INSTRUCTIONS_TOOL,
+    SET_STYLE_TOOL,
     PATCH_SITE_TOOL,
     CHANGE_LAYOUT_TOOL,
     REBUILD_SITE_TOOL,

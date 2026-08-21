@@ -24,6 +24,8 @@ from __future__ import annotations
 import re
 from html.parser import HTMLParser
 
+from worker.codegen.css_values import style_digest
+
 # Elements that mark a distinct region of a page. Anything else is detail the parser does
 # not need in order to say "the section at the top of the home page".
 BLOCK_TAGS = frozenset({"header", "nav", "main", "section", "footer", "article", "aside"})
@@ -205,5 +207,12 @@ def outline_site(files: dict[str, str] | None) -> str:
         shown = ", ".join(f".{c}" for c in classes[:60])
         more = f" (+{len(classes) - 60} more)" if len(classes) > 60 else ""
         lines.append(f"\nstyle.css defines rules for: {shown}{more}")
+
+    # The values, not just the names. Without these the parser cannot tell a change
+    # it is about to ask for from one that was already made -- see css_values.py for
+    # the loop that put a real owner through six identical requests over two days.
+    digest = style_digest(files)
+    if digest:
+        lines.append("\n" + digest)
 
     return "\n".join(lines)

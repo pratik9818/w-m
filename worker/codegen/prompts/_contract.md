@@ -32,8 +32,15 @@ so the pieces fit together.
 ## Shared class contract
 
 The stylesheet and the pages are written independently. They only line up if both sides use
-exactly these class names. Use these and only these for the structures they describe — do not
-rename them, do not invent parallel variants, and do not rely on element selectors alone.
+exactly these class names. Use these for the structures they describe — do not rename them, do not
+replace them with parallel variants, and do not rely on element selectors alone.
+
+You may add **extra classes alongside** a contract class when this particular business needs
+something the list does not cover (`class="section section-gallery"`, `class="card card-price"`).
+The contract class must always be there and always come first, so the shared stylesheet still
+dresses it; anything you add is a modifier on top. Both halves of the build are working from
+the same design direction, so a modifier you invent on a page is one the stylesheet is
+expecting to see.
 
 - Layout: `container`
 - Header: `site-header`, `header-inner`, `logo`, `logo-text`, `main-nav`, `nav-list`,
@@ -70,12 +77,14 @@ rename them, do not invent parallel variants, and do not rely on element selecto
   - Smooth scrolling to a section: `scroll-behavior: smooth` in CSS.
   - Horizontally swipeable rows of cards: CSS scroll-snap.
   - Hover and focus effects, transitions and animations: CSS.
-- No external fonts, CDNs, stylesheets, icon packs, or images. The only permitted external URLs
-  are the business's own already-hosted logo and photo URLs, if the data provides them. Use
-  system font stacks.
+- **The two typefaces named in the design direction below are already loaded** in every
+  page's head — use them, and no others. Never add a font link yourself and never fall back
+  to a system font stack: the whole site looking like an unstyled document is the single
+  most common way these come out looking cheap.
+- No other external resources: no CDNs, no icon packs, no stock images, no third-party
+  stylesheets. The only permitted external URLs are the two font families above and the
+  business's own already-hosted logo and photo URLs, if the data provides them.
 - Decorative visual interest must come from CSS alone — gradients, borders, shapes, colour
   blocks, typography.
 
-## Theme
-
-$theme_guidance
+$design_brief

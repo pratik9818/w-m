@@ -18,28 +18,21 @@ from bot_api.services.openrouter_client import (
 from bot_api.logging_config import log_event
 from db.models import Business
 from worker.codegen import shell, validate
+from worker.codegen.design_brief import (
+    brief_block,
+    design_tokens_css,
+    fallback_brief,
+    font_link,
+    make_design_brief,
+)
 from worker.codegen.quota import check_quota, record_usage
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 
-THEME_GUIDANCE = {
-    "classic": (
-        "Warm, traditional feel: neutral/cream background, a warm accent color "
-        "(e.g. deep red, burgundy, or forest green), serif headings (e.g. Georgia, "
-        "'Times New Roman'), sans-serif body text, generous but conventional spacing, "
-        "rounded-corner cards."
-    ),
-    "modern": (
-        "Minimal and clean: white or very light neutral background, one confident accent "
-        "color, sans-serif throughout (e.g. system-ui, Helvetica), generous whitespace, "
-        "understated borders/shadows, grid-based layout."
-    ),
-    "bold": (
-        "High-contrast and energetic: dark background with a single vivid accent color "
-        "(e.g. orange, electric blue, hot pink), large oversized headings, strong visual "
-        "hierarchy, punchy call-to-action styling."
-    ),
-}
+# Art direction now comes from worker/codegen/design_brief.py, which picks a palette,
+# a typeface pairing and a signature device per business. The three fixed theme
+# descriptions that used to live here survive as THEME_MOODS -- a starting point for
+# that call rather than the whole design.
 
 # Plain-text delimiters, not forced tool-calling: verified live that OpenRouter's free
 # tier caps individual tool-call argument strings at ~1024 characters regardless of
@@ -299,31 +292,31 @@ def spec_from_business(business: Business) -> dict:
 DESIGN_SPEC_FIELDS = ("name", "category", "theme", "layout", "logo_url", "extra_instructions")
 
 
-def _contract_block(spec: dict, spec_json: str) -> str:
+def _contract_block(spec: dict, spec_json: str, brief: dict) -> str:
     """Class contract, technical constraints and theme -- the part both calls need."""
-    theme = spec.get("theme") or "classic"
-    guidance = THEME_GUIDANCE.get(theme, THEME_GUIDANCE["classic"])
-    contract = Template(_read_prompt("_contract.md")).substitute(theme_guidance=guidance)
+    contract = Template(_read_prompt("_contract.md")).substitute(
+        design_brief=brief_block(brief)
+    )
     return f"{contract}\n\n## Business data\n\n```json\n{spec_json}\n```"
 
 
-def _stylesheet_prompt(spec: dict) -> str:
+def _stylesheet_prompt(spec: dict, brief: dict) -> str:
     # Deliberately excludes _content_rules.md (fabrication and copywriting rules, ~1,100
     # tokens) and the content-bearing spec fields: a stylesheet cannot fabricate a
     # testimonial or render an opening time, so sending those rules every build was
     # ~1,500 tokens of instruction the model had no way to act on.
     design_spec = {k: spec.get(k) for k in DESIGN_SPEC_FIELDS}
-    shared = _contract_block(spec, json.dumps(design_spec, indent=2, ensure_ascii=False))
+    shared = _contract_block(spec, json.dumps(design_spec, indent=2, ensure_ascii=False), brief)
     return Template(_read_prompt("stylesheet.md")).substitute(shared=shared)
 
 
-def _pages_prompt(spec: dict, page_names: tuple[str, ...]) -> str:
+def _pages_prompt(spec: dict, page_names: tuple[str, ...], brief: dict) -> str:
     spec_json = json.dumps(spec, indent=2, ensure_ascii=False)
-    shared = _contract_block(spec, spec_json) + "\n\n" + _read_prompt("_content_rules.md")
+    shared = _contract_block(spec, spec_json, brief) + "\n\n" + _read_prompt("_content_rules.md")
     return _render_pages_prompt(shared, page_names, spec.get("layout"))
 
 
-def _assemble_page(spec: dict, filename: str, fragment: str) -> str:
+def _assemble_page(spec: dict, filename: str, fragment: str, brief: dict) -> str:
     """Turn a model-written fragment (title, description, <main>) into a full page."""
     title = PAGE_TITLE_RE.search(fragment)
     desc = PAGE_DESC_RE.search(fragment)
@@ -336,6 +329,7 @@ def _assemble_page(spec: dict, filename: str, fragment: str) -> str:
         title.group(1).strip() if title else str(spec.get("name") or "Website"),
         desc.group(1).strip() if desc else (spec.get("tagline") or ""),
         main.group(0),
+        font_link(brief),
     )
 
 
@@ -397,7 +391,7 @@ def _sanitize_files(files: dict[str, str]) -> dict[str, str]:
 STYLESHEET_MARKER = "/* ---- generated ---- */"
 
 
-def _with_base_css(css: str) -> str:
+def _with_base_css(css: str, brief: dict | None = None) -> str:
     """Prepend the fallback stylesheet so a contract class can never end up unstyled.
 
     Model rules come after and win via the normal cascade. Without this, the stylesheet
@@ -405,7 +399,8 @@ def _with_base_css(css: str) -> str:
     to a real business (`find-dog`, missing `btn-primary`).
     """
     base = (Path(__file__).parent / "base.css").read_text(encoding="utf-8")
-    return f"{base}\n{STYLESHEET_MARKER}\n{css}"
+    tokens = f"{design_tokens_css(brief)}\n" if brief else ""
+    return f"{base}\n{STYLESHEET_MARKER}\n{tokens}{css}"
 
 
 def _split_stylesheet(css: str) -> tuple[str, str]:
@@ -476,12 +471,32 @@ def _style_drift(files: dict[str, str]) -> str | None:
     return None
 
 
-async def _generate(
-    prompt: str, expected: tuple[str, ...], *, fragments: bool = False,
-    reduced_reasoning: bool = False
-) -> tuple[dict[str, str], dict]:
-    content, usage = await call_plain_completion(prompt, reduced_reasoning=reduced_reasoning)
+def _format_reminder(expected: tuple[str, ...], closing: str) -> str:
+    """Told to the model after it replies in the wrong shape."""
+    blocks = "\n\n".join(
+        f"===FILE: {name}===\n<the complete file>\n===END===" for name in expected
+    )
+    return (
+        "\n\n## Your previous reply was rejected\n\n"
+        "It was missing a file marker, or a file stopped before its closing "
+        f"`{closing}`. Reply with nothing but the blocks below -- no preamble, no "
+        "explanation, each marker alone on its own line, every file complete:\n\n"
+        f"{blocks}\n"
+    )
+
+
+def _files_from_response(
+    content: str, expected: tuple[str, ...], *, fragments: bool
+) -> dict[str, str]:
+    """Pull the expected files out of one response, or say why they are not there."""
     files = _parse_files(content)
+
+    # One file expected and no markers at all: the model answered with the file itself.
+    # The truncation check below still has to pass, so this accepts a complete page and
+    # rejects a fragment or an apology, exactly as it would with the markers present.
+    if not files and len(expected) == 1 and content.strip():
+        files = {expected[0]: _strip_code_fence(content)}
+
     missing = [name for name in expected if name not in files]
     if missing:
         raise GenerationFailed(
@@ -494,7 +509,36 @@ async def _generate(
     for name in expected:
         if name.endswith(".html") and closing not in files[name]:
             raise GenerationFailed(f"Model response looks truncated: {name} lacks a closing {closing}")
-    return {name: files[name] for name in expected}, usage
+    return {name: files[name] for name in expected}
+
+
+async def _generate(
+    prompt: str, expected: tuple[str, ...], *, fragments: bool = False,
+    reduced_reasoning: bool = False
+) -> tuple[dict[str, str], dict]:
+    """One call for a group of files, with a second attempt if the shape is wrong.
+
+    A response that forgets the `===FILE:===` markers or stops mid-page is a formatting
+    failure, not a bad site, and it is worth exactly one retry: a build runs two or three
+    of these concurrently, so letting one bad shape through un-retried discards every
+    other call in the batch. A real first build was lost that way -- the response was a
+    complete page that simply opened with `<title>` instead of its marker.
+    """
+    closing = "</main>" if fragments else "</html>"
+    last_error = ""
+    for attempt in (1, 2):
+        content, usage = await call_plain_completion(
+            prompt if attempt == 1 else prompt + _format_reminder(expected, closing),
+            reduced_reasoning=reduced_reasoning,
+        )
+        try:
+            return _files_from_response(content, expected, fragments=fragments), usage
+        except GenerationFailed as exc:
+            last_error = str(exc)
+            logger.warning(
+                "generation attempt %d/2 rejected for %s: %s", attempt, list(expected), last_error
+            )
+    raise GenerationFailed(last_error)
 
 
 def _patch_prompt(
@@ -745,11 +789,28 @@ async def build_site(
         await check_quota(session, owner_telegram_id)
 
     layout = spec.get("layout")
+
+    # One short call before anything else, so the pages and the stylesheet are written to
+    # the same art direction instead of each inventing its own. Never fatal: a failure
+    # here returns the theme's hand-picked fallback.
+    try:
+        brief, brief_usage = await make_design_brief(
+            spec, json.dumps(spec, indent=2, ensure_ascii=False)
+        )
+    except Exception:
+        logger.warning("design brief raised, falling back", exc_info=True)
+        brief, brief_usage = fallback_brief(spec.get("theme") or "classic"), None
+    log_event(
+        logger, "design.brief", theme=spec.get("theme"),
+        display_font=brief["display_font"], body_font=brief["body_font"],
+        accent=brief["accent"],
+    )
+
     jobs = [
-        _generate(_pages_prompt(spec, group), group, fragments=True)
+        _generate(_pages_prompt(spec, group, brief), group, fragments=True)
         for group in page_groups_for(layout)
     ]
-    jobs.append(_generate(_stylesheet_prompt(spec), (STYLESHEET_FILE,)))
+    jobs.append(_generate(_stylesheet_prompt(spec, brief), (STYLESHEET_FILE,)))
 
     try:
         results = await asyncio.gather(*jobs)
@@ -760,16 +821,22 @@ async def build_site(
 
     files: dict[str, str] = {}
     usage = {"model": "", "input_tokens": 0, "output_tokens": 0, "requests": len(jobs)}
+    if brief_usage:
+        usage["input_tokens"] += brief_usage["input_tokens"]
+        usage["output_tokens"] += brief_usage["output_tokens"]
+        usage["requests"] += 1
     for part_files, part_usage in results:
         for name, body in part_files.items():
             # Pages come back as fragments; the shared shell is added here rather than
             # written four times by the model.
-            files[name] = _assemble_page(spec, name, body) if name.endswith(".html") else body
+            files[name] = (
+                _assemble_page(spec, name, body, brief) if name.endswith(".html") else body
+            )
         usage["model"] = part_usage["model"]
         usage["input_tokens"] += part_usage["input_tokens"]
         usage["output_tokens"] += part_usage["output_tokens"]
 
-    files[STYLESHEET_FILE] = _with_base_css(files.get(STYLESHEET_FILE, ""))
+    files[STYLESHEET_FILE] = _with_base_css(files.get(STYLESHEET_FILE, ""), brief)
     files = _sanitize_files(files)
 
     missing = [name for name in required_files_for(layout) if name not in files]

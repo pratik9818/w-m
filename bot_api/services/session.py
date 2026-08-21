@@ -51,6 +51,29 @@ async def push_edit_turn(redis: Redis, business_id: uuid.UUID, raw_message: str,
     await redis.set(key, json.dumps(turns), ex=_EDIT_CONTEXT_TTL_SECONDS)
 
 
+async def correct_last_edit_turn(
+    redis: Redis, business_id: uuid.UUID, raw_message: str, outcome: dict
+) -> None:
+    """Rewrite the outcome recorded optimistically for a turn that later changed nothing.
+
+    The edit handler has to record "applied" at enqueue time -- it is the only place that
+    still has the owner's words -- but the build that decides whether anything really
+    changed runs minutes later in the worker. Leaving the optimistic record in place told
+    the next parse the change had landed, so when the owner said "it still hasn't
+    changed" the parser saw a successful edit in the history and re-issued the very same
+    instruction. That loop ran six times for one real owner.
+    """
+    key = _EDIT_CONTEXT_KEY.format(business_id=business_id)
+    turns = await get_edit_context(redis, business_id)
+    for turn in reversed(turns):
+        if turn.get("raw_message") == raw_message:
+            turn["outcome"] = outcome
+            break
+    else:
+        return
+    await redis.set(key, json.dumps(turns), ex=_EDIT_CONTEXT_TTL_SECONDS)
+
+
 async def get_pending_edit(redis: Redis, business_id: uuid.UUID) -> dict | None:
     key = _PENDING_EDIT_KEY.format(business_id=business_id)
     value = await redis.get(key)

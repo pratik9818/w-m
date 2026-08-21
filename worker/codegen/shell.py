@@ -106,15 +106,27 @@ def _footer(spec: dict) -> str:
   </footer>"""
 
 
-def render_page(spec: dict, filename: str, title: str, description: str, main_html: str) -> str:
-    """Wrap model-written page content in the shared, deterministic document shell."""
+def render_page(
+    spec: dict,
+    filename: str,
+    title: str,
+    description: str,
+    main_html: str,
+    font_link: str = "",
+) -> str:
+    """Wrap model-written page content in the shared, deterministic document shell.
+
+    The font link is placed here rather than asked for, because a family name a model
+    invents does not 404 loudly -- the page just quietly renders in Times New Roman.
+    """
+    fonts = f"\n  {font_link}" if font_link else ""
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{_esc(title)}</title>
-  <meta name="description" content="{_esc(description)}">
+  <meta name="description" content="{_esc(description)}">{fonts}
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
