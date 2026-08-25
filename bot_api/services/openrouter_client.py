@@ -28,6 +28,7 @@ import asyncio
 import concurrent.futures
 import json
 import logging
+from collections.abc import Callable
 
 import httpx
 
@@ -58,21 +59,61 @@ API_URL = "https://openrouter.ai/api/v1/chat/completions"
 # lower single-shot word count no longer costs content -- every page gets its own full
 # response budget instead of competing with four other files in one reply. ultra stays as
 # the fallback for its higher ceiling.
+#
+# stealth/ox-alpha now leads both lists: a free, currently-cloaked reasoning model aimed at
+# coding, with a 1M context and a 131k completion ceiling -- a strictly higher ceiling than
+# anything else here at no cost. Verified live on this key: a full home-page prompt came
+# back complete in 26s (finish_reason "stop"), and it honours inference-enforced
+# tool_choice, returning a correct one-line edit in 7s. It is NOT a safe sole candidate --
+# see STEALTH_MAX_ATTEMPTS -- so the nemotrons stay behind it as proven fallbacks.
+STEALTH_MODEL = "stealth/ox-alpha"
 GENERATION_MODELS = (
+    STEALTH_MODEL,
     "nvidia/nemotron-3-super-120b-a12b:free",
     "nvidia/nemotron-3-ultra-550b-a55b:free",
 )
 # Edit parsing (forced tool call) is latency-bound -- the owner is waiting in the chat --
-# and only needs to pick one short operation, so the fast model leads. Both entries are
-# verified live to support inference-enforced tool_choice; not every free model does
-# (openai/gpt-oss-20b:free 400s on it).
-TOOL_MODELS = ("nvidia/nemotron-3-nano-30b-a3b:free", "nvidia/nemotron-3-super-120b-a12b:free")
+# and only needs to pick one short operation, so the fast model leads among the fallbacks.
+# Every entry is verified live to support inference-enforced tool_choice; not every free
+# model does (openai/gpt-oss-20b:free 400s on it).
+TOOL_MODELS = (
+    STEALTH_MODEL,
+    "nvidia/nemotron-3-nano-30b-a3b:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+)
 
 TOOL_MAX_ATTEMPTS = 3
+# Tool calls had no budget at all, so the model got whatever the provider defaulted to.
+# Both tool models reason before answering and the reasoning is billed as completion
+# tokens: a single successful edit parse spent 4,961 output tokens to produce a one-line
+# answer. A deliberation slightly longer than that reached the provider's default ceiling
+# before the tool call was ever emitted, and the owner was told the bot could not process
+# their message. This is deliberately far above what the answer itself needs.
+TOOL_MAX_TOKENS = 16000
 # Only 2 for generation: a retry against the slow primary costs ~7 minutes, so burning
 # three of them before falling back would leave the owner waiting far too long. Two
 # attempts still absorbs a transient blip, then hands over to the fast fallback.
 GENERATION_MAX_ATTEMPTS = 2
+
+# The stealth model is served from a shared upstream pool that rejects far more often than
+# it answers, with HTTP 429 "temporarily rate-limited upstream" (distinct from a per-day
+# cap -- it clears in seconds). Measured live on the real call shapes: the generation
+# prompt got through on attempt 3, the tool call on attempt 6. On the normal 2-3 attempt
+# ladders it would therefore almost never actually be reached, and the run would silently
+# be a nemotron run every time. These rejections are cheap -- each fails in 1-7s without
+# spending tokens -- so it gets a much longer ladder than the models whose retries cost
+# real minutes. Worst case here is ~1 minute of fast rejections before the fallback.
+STEALTH_MAX_ATTEMPTS = 8
+# The stealth model always reasons, and left to itself it picks its "max" effort. Measured
+# live on one page prompt: max took 236s (9,914 output tokens) against this module's 300s
+# ceiling, while high took 24s and low 18s -- both finishing cleanly, high returning the
+# fuller page of the two. Max is not worth a call that spends four minutes and can time out
+# outright on a longer prompt, so anything that hasn't asked for a specific effort gets
+# high. Callers that pass REDUCED_REASONING still get theirs; this only fills the gap.
+STEALTH_DEFAULT_EFFORT = "high"
+# ...and a cap on the backoff to match: 2**7 would sit out 128s waiting for a limit that
+# clears in seconds.
+MAX_BACKOFF_SECONDS = 8
 
 # No single call now produces a whole site -- the largest is one stylesheet or two pages --
 # so this is back to a ceiling for a hung connection rather than a real expected duration.
@@ -84,6 +125,40 @@ GENERATION_MAX_TOKENS = 32000
 
 class OpenRouterCallFailed(Exception):
     pass
+
+
+def _plain_problem(data: dict) -> str | None:
+    """Why this completion is unusable, or None if it is fine."""
+    choices = data.get("choices") or []
+    if not choices:
+        return "response contained no choices"
+    choice = choices[0]
+    if not (choice.get("message") or {}).get("content"):
+        # Seen live: the provider aborted 98 tokens into its reasoning and returned
+        # HTTP 200, finish_reason "error", and no content at all.
+        return f"empty content (finish_reason={choice.get('finish_reason')!r})"
+    return None
+
+
+def _tool_problem(data: dict, valid_names: set[str]) -> str | None:
+    """Why this tool response is unusable, or None if it is fine."""
+    choices = data.get("choices") or []
+    if not choices:
+        return "response contained no choices"
+    choice = choices[0]
+    tool_calls = (choice.get("message") or {}).get("tool_calls")
+    if not tool_calls:
+        # The usual cause is a model that reasoned until its budget ran out and never
+        # got as far as calling anything.
+        return f"no tool call returned (finish_reason={choice.get('finish_reason')!r})"
+    call = tool_calls[0].get("function") or {}
+    if call.get("name") not in valid_names:
+        return f"called an unrecognized tool: {call.get('name')!r}"
+    try:
+        json.loads(call.get("arguments") or "")
+    except (json.JSONDecodeError, TypeError):
+        return f"returned malformed tool arguments: {str(call.get('arguments'))[:120]!r}"
+    return None
 
 
 class DailyLimitReached(OpenRouterCallFailed):
@@ -126,18 +201,34 @@ async def call_forced_tool(prompt: str, tools: list[dict]) -> tuple[dict, dict]:
     body_extra = {
         "tools": [{"type": "function", "function": t} for t in tools],
         "tool_choice": "required",
+        "max_tokens": TOOL_MAX_TOKENS,
         # Picking one operation from a fixed list is a classification, not an essay --
         # one such call spent 5,744 output tokens deliberating over a small JSON answer.
         **REDUCED_REASONING,
     }
-    data, model = await _request_with_retries(prompt, body_extra, TOOL_MODELS, TOOL_MAX_ATTEMPTS)
+    data, model = await _request_with_retries(
+        prompt, body_extra, TOOL_MODELS, TOOL_MAX_ATTEMPTS,
+        problem_with=lambda d: _tool_problem(d, valid_names),
+    )
     return _parse_tool_response(data, model, valid_names)
 
 
-async def call_plain_completion(prompt: str, *, reduced_reasoning: bool = False) -> tuple[str, dict]:
+async def call_plain_completion(
+    prompt: str,
+    *,
+    reduced_reasoning: bool = False,
+    models: tuple[str, ...] | None = None,
+    online: bool = False,
+) -> tuple[str, dict]:
     """Call OpenRouter with `prompt`, no tools -- a plain text completion. Use this
     for long-form output (e.g. a full HTML document) that would otherwise get cut
     off by the free tier's ~1024-character cap on tool-call argument strings.
+
+    `online=True` appends OpenRouter's `:online` suffix, which runs a web search on the
+    prompt and injects the results before the model ever sees it. That search runs
+    unconditionally and is billed per result, so it must only be set once something has
+    already decided a lookup is genuinely needed -- see worker/codegen/research.py, which
+    spends one free non-online call making that decision first.
 
     Returns (response_text, usage).
     """
@@ -145,34 +236,55 @@ async def call_plain_completion(prompt: str, *, reduced_reasoning: bool = False)
     # applying a stated change to an existing file is mechanical, so callers doing that
     # pass low_reasoning and stop paying for thinking they don't need.
     body = {"max_tokens": GENERATION_MAX_TOKENS, **(REDUCED_REASONING if reduced_reasoning else {})}
+    candidates = models or GENERATION_MODELS
+    if online:
+        candidates = tuple(f"{m}:online" for m in candidates)
     data, model = await _request_with_retries(
-        prompt, body, GENERATION_MODELS, GENERATION_MAX_ATTEMPTS
+        prompt, body, candidates, GENERATION_MAX_ATTEMPTS, problem_with=_plain_problem
     )
-    choices = data.get("choices") or []
-    content = choices[0]["message"].get("content") if choices else None
-    if not content:
-        raise OpenRouterCallFailed(f"Model returned no content: {data}")
+    # Guaranteed non-empty by _plain_problem, which the retry ladder enforced above.
+    content = data["choices"][0]["message"]["content"]
     return content, _extract_usage(data, model)
 
 
 async def _request_with_retries(
-    prompt: str, body_extra: dict, models: tuple[str, ...], max_attempts: int
+    prompt: str,
+    body_extra: dict,
+    models: tuple[str, ...],
+    max_attempts: int,
+    problem_with: Callable[[dict], str | None] | None = None,
 ) -> tuple[dict, str]:
     """Shared retry/model-fallback loop. Returns (response_json, model_used) for a
-    successful (HTTP 200, no body-level error) response.
+    response that is HTTP 200, carries no body-level error, and is actually usable.
+
+    `problem_with` is what makes the third of those true. A 200 whose body is the wrong
+    shape -- no content, no tool call, unparseable arguments -- used to be detected by the
+    caller, *after* this function had already returned, so it escaped the retry ladder
+    entirely: no second attempt, no fall back to the other model, straight to a failure the
+    owner saw. Both real symptoms had that one cause. A build died on "Model returned no
+    content" when the provider aborted mid-reasoning, and an edit died on "Model did not
+    return a tool call" when the model deliberated past its token budget -- each a single
+    unlucky roll that a plain retry would have absorbed. Checking here makes a
+    wrong-shaped body exactly as retryable as a 502.
     """
     headers = {"Authorization": f"Bearer {get_settings().openrouter_api_key}"}
     body_base = {"messages": [{"role": "user", "content": prompt}], **body_extra}
 
     last_error: Exception | None = None
     for model in models:
-        for attempt in range(1, max_attempts + 1):
+        # Per-model, because the stealth pool needs a long ladder of cheap retries while
+        # the nemotrons need a short one of expensive ones -- see STEALTH_MAX_ATTEMPTS.
+        attempts_here = STEALTH_MAX_ATTEMPTS if model.startswith("stealth/") else max_attempts
+        for attempt in range(1, attempts_here + 1):
             logger.info(
                 "llm.attempt",
-                extra={"event": "llm.attempt", "model": model, "attempt": attempt, "max_attempts": max_attempts},
+                extra={"event": "llm.attempt", "model": model, "attempt": attempt, "max_attempts": attempts_here},
             )
+            body = {**body_base, "model": model}
+            if model.startswith("stealth/") and "reasoning" not in body:
+                body["reasoning"] = {"effort": STEALTH_DEFAULT_EFFORT}
             try:
-                resp = await asyncio.to_thread(_post_sync_bounded, headers, {**body_base, "model": model})
+                resp = await asyncio.to_thread(_post_sync_bounded, headers, body)
             except (httpx.HTTPError, concurrent.futures.TimeoutError) as exc:
                 last_error = exc
             else:
@@ -183,8 +295,19 @@ async def _request_with_retries(
                     # transient 504 "Upstream idle timeout exceeded" arrived this way).
                     body_error = data.get("error")
                     if body_error is None:
-                        return data, model
-                    last_error = OpenRouterCallFailed(f"{model}: {body_error}")
+                        problem = problem_with(data) if problem_with else None
+                        if problem is None:
+                            return data, model
+                        logger.warning(
+                            "llm.unusable",
+                            extra={
+                                "event": "llm.unusable", "model": model,
+                                "attempt": attempt, "problem": problem,
+                            },
+                        )
+                        last_error = OpenRouterCallFailed(f"{model}: {problem}")
+                    else:
+                        last_error = OpenRouterCallFailed(f"{model}: {body_error}")
                 elif resp.status_code == 404:
                     # This model is gone from the free tier -- no point retrying it,
                     # move straight to the next candidate.
@@ -201,8 +324,8 @@ async def _request_with_retries(
                 else:
                     last_error = OpenRouterCallFailed(f"{model} {resp.status_code}: {resp.text}")
 
-            if attempt < max_attempts:
-                await asyncio.sleep(2 ** (attempt - 1))
+            if attempt < attempts_here:
+                await asyncio.sleep(min(2 ** (attempt - 1), MAX_BACKOFF_SECONDS))
 
     raise OpenRouterCallFailed(f"OpenRouter call failed after trying all model candidates: {last_error}")
 

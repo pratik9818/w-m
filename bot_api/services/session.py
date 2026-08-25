@@ -7,11 +7,60 @@ _ACTIVE_BUSINESS_KEY = "active_business:{telegram_user_id}"
 _ACTIVE_BUSINESS_TTL_SECONDS = 60 * 60 * 24 * 30  # 30 days
 
 _EDIT_CONTEXT_KEY = "nl_edit_ctx:{business_id}"
-_EDIT_CONTEXT_TTL_SECONDS = 600  # 10 min sliding window
-_EDIT_CONTEXT_MAX_TURNS = 3
+# An owner reads the bot's question, thinks, maybe goes and finds the answer, then comes
+# back -- and a build they are waiting on takes minutes on its own. At 10 minutes the
+# window expired mid-conversation and the reply landed with no memory of what it answered.
+_EDIT_CONTEXT_TTL_SECONDS = 3600  # 1 hour sliding window
+# Three turns is one question, one answer, and one more message -- an owner making a few
+# small changes in a row had already pushed the start of the exchange out of view.
+_EDIT_CONTEXT_MAX_TURNS = 8
 
 _PENDING_EDIT_KEY = "pending_edit:{business_id}"
 _PENDING_EDIT_TTL_SECONDS = 600
+
+
+def render_edit_context(context: list[dict] | None) -> str:
+    """The recent-turn buffer, rendered for a prompt.
+
+    Lives here rather than in one of its callers because two prompts now need exactly this
+    rendering of exactly this buffer -- understanding a message, and choosing an operation
+    for it -- and a private copy in either one could not be shared without an import cycle.
+    """
+    if not context:
+        return ""
+    lines = [
+        "\nRecent conversation (most recent last). The new message is part of this exchange, "
+        "not the start of one:",
+        "- If your last turn asked a question, the new message is almost certainly the answer "
+        "to it -- including when it reads like a standalone instruction. 'Single landing page', "
+        "sent after you asked whether they wanted a landing page or four pages, is that answer, "
+        "not a fresh request to inspect the layout. Carry the subject of your own question over "
+        "instead of starting again.",
+        "- Otherwise, use this to resolve a short or ambiguous reply; a clear, self-contained "
+        "instruction can be acted on directly.",
+    ]
+    for i, turn in enumerate(context, start=1):
+        lines.append(f'{i}. Owner said: "{turn["raw_message"]}"')
+        outcome = turn["outcome"]
+        if "bot_asked" in outcome:
+            lines.append(f'   You asked: "{outcome["bot_asked"]}"')
+        elif "applied" in outcome:
+            lines.append(f'   You applied: {outcome["applied"]} ({outcome["summary"]})')
+        elif "rejected" in outcome:
+            lines.append(f'   That was rejected: {outcome["rejected"]}')
+        elif "drafted_but_unpublished" in outcome:
+            lines.append(f'   You drafted this {outcome["field"]} text, not yet published: "{outcome["text"]}"')
+
+    # Repeated at the end, because it is the fact most likely to be needed and the one that
+    # was reliably getting lost: your own unanswered question reads as just another history
+    # line when it sits in the middle of a transcript.
+    last_outcome = context[-1]["outcome"]
+    if "bot_asked" in last_outcome:
+        lines.append(
+            f'\nYou are waiting on an answer to your own question: "{last_outcome["bot_asked"]}"'
+            "\nRead the new message as that answer first."
+        )
+    return "\n".join(lines) + "\n"
 
 
 async def set_active_business(redis: Redis, telegram_user_id: int, business_id: uuid.UUID) -> None:

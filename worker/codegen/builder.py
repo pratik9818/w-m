@@ -8,6 +8,7 @@ import uuid
 from pathlib import Path
 from string import Template
 
+import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot_api.services.openrouter_client import (
@@ -26,6 +27,8 @@ from worker.codegen.design_brief import (
     make_design_brief,
 )
 from worker.codegen.quota import check_quota, record_usage
+from worker.codegen.photos import allocate_photos, find_photos, photos_section
+from worker.codegen.research import facts_for_build, facts_for_edit
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 
@@ -47,8 +50,21 @@ BROKEN_LINK_RE = re.compile(
     r"""<a\b[^>]*\bhref\s*=\s*["'](?:\s*|#|mailto:\s*|tel:\s*)["'][^>]*>(?P<text>.*?)</a\s*>""",
     re.IGNORECASE | re.DOTALL,
 )
-SCRIPT_EL_RE = re.compile(r"<script\b[^>]*>.*?</script\s*>|<script\b[^>]*/?>", re.IGNORECASE | re.DOTALL)
 EMPTY_IMG_RE = re.compile(r"""<img\b[^>]*\bsrc\s*=\s*["']\s*["'][^>]*/?>""", re.IGNORECASE)
+# Tags the model may put before <main> for the document head: a CDN stylesheet, an icon
+# pack, a library script. Everything else outside <main> is discarded.
+HEAD_ASSET_RE = re.compile(
+    r"""<link\b[^>]*>|<script\b[^>]*>.*?</script\s*>|<script\b[^>]*/>""",
+    re.IGNORECASE | re.DOTALL,
+)
+ASSET_URL_RE = re.compile(r"""\b(?:src|href)\s*=\s*["\']([^"\']*)["\']""", re.IGNORECASE)
+# A stylesheet served from somewhere other than our own style.css. Its class names cannot
+# be known from here, which is the thing _style_drift has to stop assuming.
+EXTERNAL_CSS_RE = re.compile(
+    r"""<link\b[^>]*\bhref\s*=\s*["\']https?://[^"\']+["\'][^>]*>""", re.IGNORECASE
+)
+IMG_TAG_RE = re.compile(r"""<img\b[^>]*>""", re.IGNORECASE)
+IMG_SRC_RE = re.compile(r"""<img\b[^>]*\bsrc\s*=\s*["']([^"']*)["']""", re.IGNORECASE)
 CSS_CLASS_RE = re.compile(r"\.(-?[_a-zA-Z][\w-]*)")
 PAGE_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 PAGE_DESC_RE = re.compile(
@@ -280,9 +296,10 @@ def spec_from_business(business: Business) -> dict:
         "photo_urls": photo_urls,
         "extra_instructions": _clean(business.extra_instructions),
         "layout": business.layout,
-        # Passed in as data so the footer never reaches for `new Date()` -- a real
-        # failure: every generated page carried a `document.write` copyright year, which
-        # tripped the sandbox's no_script_tags check and correctly blocked the deploy.
+        # Passed in as data so the footer never reaches for `new Date()`. Scripts are
+        # allowed on these sites now, but the footer year is still the wrong place for
+        # one: the shell writes the footer, the model never sees it, and a value known at
+        # build time should not wait on the browser to compute it.
         "current_year": datetime.date.today().year,
     }
 
@@ -310,13 +327,17 @@ def _stylesheet_prompt(spec: dict, brief: dict) -> str:
     return Template(_read_prompt("stylesheet.md")).substitute(shared=shared)
 
 
-def _pages_prompt(spec: dict, page_names: tuple[str, ...], brief: dict) -> str:
+def _pages_prompt(
+    spec: dict, page_names: tuple[str, ...], brief: dict, research: str = "",
+    photos: list[dict] | None = None,
+) -> str:
     spec_json = json.dumps(spec, indent=2, ensure_ascii=False)
     shared = _contract_block(spec, spec_json, brief) + "\n\n" + _read_prompt("_content_rules.md")
-    return _render_pages_prompt(shared, page_names, spec.get("layout"))
+    return _render_pages_prompt(shared, page_names, spec.get("layout"), research, photos)
 
 
-def _assemble_page(spec: dict, filename: str, fragment: str, brief: dict) -> str:
+def _assemble_page(spec: dict, filename: str, fragment: str, brief: dict,
+                   stock_photo_credit: bool = False) -> str:
     """Turn a model-written fragment (title, description, <main>) into a full page."""
     title = PAGE_TITLE_RE.search(fragment)
     desc = PAGE_DESC_RE.search(fragment)
@@ -330,11 +351,16 @@ def _assemble_page(spec: dict, filename: str, fragment: str, brief: dict) -> str
         desc.group(1).strip() if desc else (spec.get("tagline") or ""),
         main.group(0),
         font_link(brief),
+        # A CDN stylesheet or library the page asked for. It sits before <main> in the
+        # response because the shell owns <head> -- the model cannot write into it.
+        head_extra=_head_assets(fragment[: main.start()]),
+        stock_photo_credit=stock_photo_credit,
     )
 
 
 def _render_pages_prompt(
-    shared: str, page_names: tuple[str, ...], layout: str | None = None
+    shared: str, page_names: tuple[str, ...], layout: str | None = None, research: str = "",
+    photos: list[dict] | None = None,
 ) -> str:
     output_format = "\n".join(
         f"===FILE: {name}===\n<the title, description and main block for {name}>"
@@ -349,6 +375,8 @@ def _render_pages_prompt(
         page_names=" and ".join(page_names),
         output_format=output_format,
         page_requirements=requirements,
+        research=f"\n{research}\n" if research else "",
+        photos=f"\n{photos_section(photos or [], page_names)}\n" if photos else "",
     )
 
 
@@ -367,18 +395,94 @@ def _sanitize_html(html: str) -> str:
     """Remove output the contract already forbids, rather than merely reporting it.
 
     Every defect handled here caused a real failed build: three separate deploys died on
-    an empty `mailto:` at 6/7 and 7/8 checks, and a `document.write` copyright year blocked
-    another. Each had a prompt rule forbidding it, in two files, and the models emitted it
-    anyway. Removal is safe precisely because these are things the site is never allowed to
-    contain -- so nothing legitimate can be lost.
+    an empty `mailto:` at 6/7 and 7/8 checks. Each had a prompt rule forbidding it, in two
+    files, and the models emitted it anyway. Removal is safe precisely because these are
+    things the site is never allowed to contain -- so nothing legitimate can be lost.
+
+    Script elements used to be stripped here too. They are now a supported part of a site,
+    so they are left alone: what makes that safe is the sandbox, which loads every page in
+    a real browser and fails the build on any console error or thrown exception. A script
+    is no longer forbidden output, so removing it would destroy working page behaviour.
     """
     # Dead links: keep the visible text, drop the anchor.
     html = BROKEN_LINK_RE.sub(lambda m: m.group("text"), html)
-    # Script elements are forbidden outright; the sandbox would reject the build anyway.
-    html = SCRIPT_EL_RE.sub("", html)
     # An <img> with no src renders as a broken-image icon on a live customer site.
     html = EMPTY_IMG_RE.sub("", html)
     return html
+
+
+# Long enough for a slow CDN, short enough that a hung host cannot hold up a build. Every
+# URL is checked concurrently, so this is close to the whole cost of the pass.
+IMAGE_HEAD_TIMEOUT_SECONDS = 8
+
+
+def _head_assets(fragment_before_main: str) -> str:
+    """Pull the <link>/<script src> tags the model wrote for the document head.
+
+    Anything relative is dropped: this site has no local .js and exactly one local
+    stylesheet, already in the shell, so a relative asset path can only ever be a 404.
+    """
+    kept = []
+    for tag in HEAD_ASSET_RE.findall(fragment_before_main):
+        url = next(iter(ASSET_URL_RE.findall(tag)), "")
+        if url.startswith(("http://", "https://")):
+            kept.append(tag.strip())
+    return "\n  ".join(kept)
+
+
+async def _url_is_live(client: httpx.AsyncClient, url: str) -> bool:
+    """True unless the URL definitively did not serve an image.
+
+    Deliberately asymmetric: only a real response with a bad status counts as dead. A
+    timeout or a DNS failure is our problem, not the page's, and silently deleting a
+    perfectly good photo because the build host had a bad moment is the worse mistake.
+    """
+    try:
+        resp = await client.head(url, follow_redirects=True, timeout=IMAGE_HEAD_TIMEOUT_SECONDS)
+        if resp.status_code == 405:  # HEAD not allowed; ask for the first byte instead
+            resp = await client.get(
+                url, follow_redirects=True, timeout=IMAGE_HEAD_TIMEOUT_SECONDS,
+                headers={"Range": "bytes=0-0"},
+            )
+        return resp.status_code < 400
+    except httpx.HTTPError:
+        return True
+
+
+async def _drop_dead_images(files: dict[str, str]) -> dict[str, str]:
+    """Remove every <img> whose URL does not actually load.
+
+    Now that the model may reach for real photography, an invented image URL is the
+    obvious new failure -- and one the sandbox already fails the build over. Checking here
+    costs a few HEAD requests and turns a dead build into a page with one fewer picture.
+    """
+    urls = {
+        src
+        for name, body in files.items()
+        if name.endswith(".html")
+        for src in IMG_SRC_RE.findall(body)
+        if src.startswith(("http://", "https://"))
+    }
+    if not urls:
+        return files
+
+    ordered = sorted(urls)
+    async with httpx.AsyncClient() as client:
+        alive = await asyncio.gather(*(_url_is_live(client, url) for url in ordered))
+    dead = {url for url, ok in zip(ordered, alive) if not ok}
+    if not dead:
+        return files
+
+    log_event(logger, "images.dropped", count=len(dead), urls=sorted(dead)[:5])
+
+    def strip(match: re.Match) -> str:
+        src = next(iter(IMG_SRC_RE.findall(match.group(0))), "")
+        return "" if src in dead else match.group(0)
+
+    return {
+        name: (IMG_TAG_RE.sub(strip, body) if name.endswith(".html") else body)
+        for name, body in files.items()
+    }
 
 
 def _sanitize_files(files: dict[str, str]) -> dict[str, str]:
@@ -391,6 +495,67 @@ def _sanitize_files(files: dict[str, str]) -> dict[str, str]:
 STYLESHEET_MARKER = "/* ---- generated ---- */"
 
 
+# Contract classes that are *boxes the page is built out of*. Taking one of these out of
+# the document flow is never a design choice -- it is always a mistake, because the element
+# stops reserving any height and whatever follows it slides underneath.
+#
+# This is not hypothetical. A real site shipped with:
+#
+#     .hero-bg, .page-hero.hero-bg { position: absolute; inset: 0; pointer-events: none; }
+#
+# base.css defines `.hero-bg` as the hero *section* carrying a background photo; the model,
+# which never sees the HTML, read the name as a decorative backdrop layer and positioned it
+# like one. The hero left the flow, the next section rendered 681px underneath it, and the
+# owner reported overlapping text six times. Every attempted fix added margin or padding --
+# which cannot move an absolutely positioned element -- so all six failed, and one of them
+# enlarged the hero and made it worse.
+#
+# Deliberately excludes ::before/::after: a positioned pseudo-element is the normal way to
+# build an overlay, and base.css relies on exactly that.
+LAYOUT_CONTAINERS = frozenset({
+    "container", "hero", "page-hero", "hero-bg", "hero-inner",
+    "section", "section-alt", "card-grid", "card", "steps", "step",
+    "faq-list", "faq-item", "cta-band", "contact-list", "contact-item",
+    "site-footer", "footer-inner", "footer-col", "header-inner",
+})
+CSS_RULE_RE = re.compile(r"([^{}]+)\{([^{}]*)\}")
+OUT_OF_FLOW_DECL_RE = re.compile(
+    r"\s*position\s*:\s*(?:absolute|fixed)\s*(?:!important)?\s*;?", re.IGNORECASE
+)
+
+
+def _selector_targets_container(selector: str) -> bool:
+    """True if this selector styles a layout container itself, not a pseudo-element of one."""
+    for part in selector.split(","):
+        part = part.strip()
+        if not part or "::" in part:
+            continue
+        # The subject of a selector is its last compound: `.hero .card` styles the card.
+        subject = part.split()[-1].split(">")[-1].strip()
+        classes = set(re.findall(r"\.([\w-]+)", subject))
+        if classes & LAYOUT_CONTAINERS:
+            return True
+    return False
+
+
+def _keep_layout_in_flow(css: str) -> tuple[str, list[str]]:
+    """Drop `position: absolute/fixed` from rules that style a layout container.
+
+    Returns (css, selectors_fixed). Only that one declaration is removed -- everything else
+    in the rule is the design the model intended and is left alone.
+    """
+    fixed: list[str] = []
+
+    def clean(match: re.Match) -> str:
+        selector, body = match.group(1), match.group(2)
+        if not OUT_OF_FLOW_DECL_RE.search(body) or not _selector_targets_container(selector):
+            return match.group(0)
+        fixed.append(" ".join(selector.split())[:80])
+        return f"{selector}{{{OUT_OF_FLOW_DECL_RE.sub('', body)}}}"
+
+    return CSS_RULE_RE.sub(clean, css), fixed
+
+
 def _with_base_css(css: str, brief: dict | None = None) -> str:
     """Prepend the fallback stylesheet so a contract class can never end up unstyled.
 
@@ -400,6 +565,9 @@ def _with_base_css(css: str, brief: dict | None = None) -> str:
     """
     base = (Path(__file__).parent / "base.css").read_text(encoding="utf-8")
     tokens = f"{design_tokens_css(brief)}\n" if brief else ""
+    css, fixed = _keep_layout_in_flow(css)
+    if fixed:
+        log_event(logger, "css.flow_restored", selectors=fixed[:5], count=len(fixed))
     return f"{base}\n{STYLESHEET_MARKER}\n{tokens}{css}"
 
 
@@ -457,12 +625,26 @@ def _style_drift(files: dict[str, str]) -> str | None:
     pages were written against.
     """
     undefined = set(_undefined_classes(files))
+    # A page may now load an icon pack or a CSS library from a CDN, whose class names are
+    # not in style.css and cannot be read from here. The count below assumes style.css is
+    # the only stylesheet, so once another one is linked the count means nothing -- a site
+    # with a dozen `fa-*` icons is not a mismatched build. The contract-class check below
+    # still holds either way, because base.css guarantees those regardless.
+    external_css = any(
+        name.endswith(".html") and EXTERNAL_CSS_RE.search(body) for name, body in files.items()
+    )
     missing_contract = sorted(undefined & CONTRACT_CLASSES)
     if missing_contract:
         # Deliberately NOT a failure any more: base.css guarantees a usable rule for every
         # contract class, so this is cosmetic (the model's own styling for that class is
         # missing, the element still renders fine). Raising here killed a real build.
         logger.warning("stylesheet omitted contract class rules, base.css covering: %s", missing_contract)
+    if external_css and len(undefined) > MAX_UNSTYLED_CLASSES:
+        logger.info(
+            "%d unstyled classes, but the page loads an external stylesheet -- not drift",
+            len(undefined),
+        )
+        return None
     if len(undefined) > MAX_UNSTYLED_CLASSES:
         return (
             f"{len(undefined)} classes have no stylesheet rules, which suggests the pages "
@@ -547,6 +729,7 @@ def _patch_prompt(
     instruction: str,
     user_message: str | None = None,
     reference: str | None = None,
+    research: str = "",
 ) -> str:
     # The instruction is written by a parser that has never seen this file, so the names in
     # it are guesses. Carrying the owner's own words alongside it gives the model -- which
@@ -571,6 +754,7 @@ def _patch_prompt(
     return Template(_read_prompt("patch.md")).safe_substitute(
         filename=filename, file_content=content, instruction=instruction,
         owner_words=owner_words, reference=reference_block,
+        research=f"\n{research}\n" if research else "",
     )
 
 
@@ -580,6 +764,7 @@ async def _patch_one(
     instruction: str,
     user_message: str | None = None,
     reference: str | None = None,
+    research: str = "",
 ) -> tuple[str, dict]:
     """Patch a single file, rejecting a response that restructured too much of it."""
     last_error = ""
@@ -587,7 +772,7 @@ async def _patch_one(
         # Applying a stated change to an existing file is mechanical work: the model was
         # spending ~80% of its output budget deliberating rather than writing the file.
         text, usage = await call_plain_completion(
-            _patch_prompt(filename, content, instruction, user_message, reference),
+            _patch_prompt(filename, content, instruction, user_message, reference, research),
             reduced_reasoning=True,
         )
         parsed = _parse_files(text)
@@ -629,7 +814,20 @@ async def repair_files(
     apart from one link. Repair costs one call and a few thousand tokens.
     """
     files = _sanitize_files(files)
-    remaining = validate.failed(validate.validate_files(files))
+    # Re-derive the markup checks, because sanitizing may have just fixed some of them,
+    # and carry forward anything `checks` reported that this module cannot judge for
+    # itself -- every browser-only verdict: console errors, images that would not load,
+    # a stylesheet that 404ed, a page that rendered identically.
+    #
+    # Carrying them is the whole point. Until this existed the `checks` argument was
+    # never read: a sandbox failure re-ran the markup checks, found nothing wrong (the
+    # markup was fine -- it was the JavaScript that threw), and returned "nothing to
+    # repair" while the build died. A page whose script had one stray bracket could not
+    # be repaired at all.
+    markup = validate.validate_files(files)
+    judged_here = {check["name"] for check in markup}
+    carried = [c for c in checks if not c["passed"] and c["name"] not in judged_here]
+    remaining = validate.failed(markup) + carried
     if not remaining:
         log_event(logger, "repair.sanitized", files=len(files))
         return files, None, []
@@ -680,7 +878,10 @@ async def repair_files(
         usage["input_tokens"] += part_usage["input_tokens"]
         usage["output_tokens"] += part_usage["output_tokens"]
 
-    still_failing = validate.failed(validate.validate_files(repaired))
+    # The carried checks came from a browser and cannot be re-run here, so they stay on
+    # the list. The sandbox caller re-tests and gets the real answer; the pre-flight
+    # caller never passes any, so nothing changes for it.
+    still_failing = validate.failed(validate.validate_files(repaired)) + carried
     log_event(logger, "repair.finished", fixed=len(remaining) - len(still_failing),
               remaining=[c["name"] for c in still_failing],
               tokens=usage["input_tokens"] + usage["output_tokens"])
@@ -730,17 +931,34 @@ async def patch_site_files(
         else:
             editable[name] = files[name]
 
+    # An edit can need facts just as much as a build can -- "add the other coins too"
+    # names nothing the model knows. One research pass is shared by every targeted file,
+    # rather than each patch call paying for its own search.
+    research, research_usage = await facts_for_edit(instruction, user_message)
+
     results = await asyncio.gather(
-        *(_patch_one(name, editable[name], instruction, user_message, prefixes[name])
+        *(_patch_one(name, editable[name], instruction, user_message, prefixes[name], research)
           for name in wanted)
     )
 
     patched = dict(files)
     usage = {"model": "", "input_tokens": 0, "output_tokens": 0, "requests": len(wanted)}
+    if research_usage:
+        usage["input_tokens"] += research_usage["input_tokens"]
+        usage["output_tokens"] += research_usage["output_tokens"]
+        usage["requests"] += research_usage.get("requests", 1)
     for name, (content, part_usage) in zip(wanted, results):
         if prefixes[name]:
             content = f"{prefixes[name]}\n{content}"
-        patched[name] = _sanitize_html(content) if name.endswith(".html") else content
+        if name.endswith(".html"):
+            patched[name] = _sanitize_html(content)
+        else:
+            # An edit can reintroduce the same defect, and an existing site can still be
+            # carrying it from before this guard existed -- so patched stylesheets are
+            # cleaned too, which quietly repairs an already-broken site on its next edit.
+            patched[name], fixed = _keep_layout_in_flow(content)
+            if fixed:
+                log_event(logger, "css.flow_restored", selectors=fixed[:5], count=len(fixed))
         usage["model"] = part_usage["model"]
         usage["input_tokens"] += part_usage["input_tokens"]
         usage["output_tokens"] += part_usage["output_tokens"]
@@ -758,6 +976,8 @@ async def patch_site_files(
     if drift is not None:
         raise GenerationFailed(drift)
 
+    patched = await _drop_dead_images(patched)
+
     if owner_telegram_id is not None:
         await record_usage(
             session, owner_telegram_id, business_id, usage["model"],
@@ -765,6 +985,15 @@ async def patch_site_files(
             kind="edit", requests=usage["requests"],
         )
     return patched, usage
+
+
+async def _brief_or_fallback(spec: dict) -> tuple[dict, dict | None]:
+    """The design brief, or the theme's hand-picked defaults if the call fails."""
+    try:
+        return await make_design_brief(spec, json.dumps(spec, indent=2, ensure_ascii=False))
+    except Exception:
+        logger.warning("design brief raised, falling back", exc_info=True)
+        return fallback_brief(spec.get("theme") or "classic"), None
 
 
 async def build_site(
@@ -790,25 +1019,33 @@ async def build_site(
 
     layout = spec.get("layout")
 
-    # One short call before anything else, so the pages and the stylesheet are written to
-    # the same art direction instead of each inventing its own. Never fatal: a failure
-    # here returns the theme's hand-picked fallback.
-    try:
-        brief, brief_usage = await make_design_brief(
-            spec, json.dumps(spec, indent=2, ensure_ascii=False)
-        )
-    except Exception:
-        logger.warning("design brief raised, falling back", exc_info=True)
-        brief, brief_usage = fallback_brief(spec.get("theme") or "classic"), None
+    # Two short calls before anything else, run together because neither depends on the
+    # other. The brief keeps the pages and the stylesheet on one art direction instead of
+    # each inventing its own; the research answers anything about this business the model
+    # would otherwise have to make up. Neither can fail the build: the brief falls back to
+    # the theme's hand-picked defaults, and research falls back to no facts at all.
+    # Photographs join the same round: finding them is a model call plus a few searches,
+    # and it depends on nothing the brief or the research produces. Owners do not supply
+    # pictures, so if this returns nothing the pages are written to work without them
+    # rather than reaching for a random-image service.
+    (brief, brief_usage), (research, research_usage), (photos, photo_usage) = await asyncio.gather(
+        _brief_or_fallback(spec), facts_for_build(spec), find_photos(spec)
+    )
     log_event(
         logger, "design.brief", theme=spec.get("theme"),
         display_font=brief["display_font"], body_font=brief["body_font"],
         accent=brief["accent"],
     )
 
+    # Split rather than shared: the page calls below run concurrently, so a photograph
+    # offered to both is a photograph that can appear twice on one site.
+    groups = page_groups_for(layout)
+    per_group = allocate_photos(photos, groups)
     jobs = [
-        _generate(_pages_prompt(spec, group, brief), group, fragments=True)
-        for group in page_groups_for(layout)
+        _generate(
+            _pages_prompt(spec, group, brief, research, per_group[group]), group, fragments=True
+        )
+        for group in groups
     ]
     jobs.append(_generate(_stylesheet_prompt(spec, brief), (STYLESHEET_FILE,)))
 
@@ -821,16 +1058,20 @@ async def build_site(
 
     files: dict[str, str] = {}
     usage = {"model": "", "input_tokens": 0, "output_tokens": 0, "requests": len(jobs)}
-    if brief_usage:
-        usage["input_tokens"] += brief_usage["input_tokens"]
-        usage["output_tokens"] += brief_usage["output_tokens"]
-        usage["requests"] += 1
+    for extra in (brief_usage, research_usage, photo_usage):
+        if extra:
+            usage["input_tokens"] += extra["input_tokens"]
+            usage["output_tokens"] += extra["output_tokens"]
+            # Research is one call when it decides no lookup is needed and two when it
+            # runs one, so it reports its own count rather than assuming.
+            usage["requests"] += extra.get("requests", 1)
     for part_files, part_usage in results:
         for name, body in part_files.items():
             # Pages come back as fragments; the shared shell is added here rather than
             # written four times by the model.
             files[name] = (
-                _assemble_page(spec, name, body, brief) if name.endswith(".html") else body
+                _assemble_page(spec, name, body, brief, stock_photo_credit=bool(photos))
+                if name.endswith(".html") else body
             )
         usage["model"] = part_usage["model"]
         usage["input_tokens"] += part_usage["input_tokens"]
@@ -838,6 +1079,7 @@ async def build_site(
 
     files[STYLESHEET_FILE] = _with_base_css(files.get(STYLESHEET_FILE, ""), brief)
     files = _sanitize_files(files)
+    files = await _drop_dead_images(files)
 
     missing = [name for name in required_files_for(layout) if name not in files]
     if missing:

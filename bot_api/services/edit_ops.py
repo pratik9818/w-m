@@ -64,10 +64,36 @@ FIELD_TARGETS: dict[str, tuple[str, ...]] = {
 # file with one change applied", so it can never remove the file it was handed. One real
 # request -- "Keep only one page and remove all" -- was accepted anyway and burned 21,867
 # tokens across three calls to return the same three pages very slightly reworded.
+#
+# Both halves of this were once looser than that, and both cost a real owner an edit:
+#
+# "page" on its own matched "remove the Services link from the page" -- a nav link, on the
+# one page there is -- so an ordinary edit was turned away as if it restructured the site.
+# A page is only named structurally as one of the site's actual pages, or in the plural.
+#
+# A bare "landing page" was worse: it matched the owner's *answer* to the question this
+# guard asks. Told "landing page or four-page site?", they replied "Single landing page",
+# that matched, and the same question came back -- three times, and it could never have
+# stopped. A layout name only means restructuring when something asks for the change.
+_PAGE_NOUN = r"(?:pages|(?:about|services|contact|home|index)\s+page|\w+\.html)"
+_LAYOUT_NOUN = r"(?:single[- ]page|one[- ]page|landing page|four[- ]page|multi[- ]?page)"
 STRUCTURAL_REQUEST_RE = re.compile(
-    r"\b(remove|delete|drop|get rid of)\b[^.]{0,40}\b(page|pages|\w+\.html)\b"
+    rf"\b(remove|delete|drop|get rid of)\b[^.]{{0,40}}\b{_PAGE_NOUN}\b"
     r"|\b(add|create|make)\b[^.]{0,30}\b(new page|another page|extra page)\b"
-    r"|\bkeep only one page\b|\bsingle[- ]page\b|\bone[- ]page\b|\blanding page\b",
+    r"|\bkeep only one page\b"
+    rf"|\b(make|turn|convert|change|rebuild|split)\b[^.]{{0,30}}\b{_LAYOUT_NOUN}\b",
+    re.IGNORECASE,
+)
+
+# The two ways an owner answers "landing page or four-page site?". Deliberately narrow:
+# this only has to read a reply to that question, and anything it does not recognise falls
+# through to being read as an ordinary message rather than guessed at.
+_LANDING_ANSWER_RE = re.compile(
+    r"\b(single|one)\b[^.]{0,20}\b(page|landing)\b|\blanding page\b|\bone[- ]pager\b",
+    re.IGNORECASE,
+)
+_MULTIPAGE_ANSWER_RE = re.compile(
+    r"\bfour[- ]?page\b|\b4[- ]?page\b|\bmulti[- ]?page\b|\bseparate pages\b",
     re.IGNORECASE,
 )
 
@@ -75,6 +101,20 @@ STRUCTURAL_REQUEST_RE = re.compile(
 def is_structural_request(instruction: str) -> bool:
     """True if this asks to change which pages exist, which patching cannot do."""
     return bool(STRUCTURAL_REQUEST_RE.search(instruction or ""))
+
+
+def layout_answer(text: str) -> str | None:
+    """Which layout this message asks for, or None if it is not an answer at all.
+
+    Checked before the multipage pattern would ever see "single landing page", since the
+    two vocabularies overlap ("one page" vs "four page") and the landing wording is the
+    one an owner actually types.
+    """
+    if _LANDING_ANSWER_RE.search(text or ""):
+        return "landing"
+    if _MULTIPAGE_ANSWER_RE.search(text or ""):
+        return "multipage"
+    return None
 
 
 # A picture is an element on a page, never a rule in the stylesheet. A real edit asking to

@@ -13,9 +13,12 @@ sources of truth feed one reporting and repair path.
 import re
 
 from worker.codegen.html_check import html_problems
+from worker.codegen.js_check import js_problems
 
 TAG_RE = re.compile(r"<[^>]+>")
-SCRIPT_RE = re.compile(r"<script\b", re.IGNORECASE)
+SCRIPT_SRC_RE = re.compile(
+    r"""<script\b[^>]*\bsrc\s*=\s*["']([^"']*)["']""", re.IGNORECASE
+)
 HREF_RE = re.compile(r"""\bhref\s*=\s*["']([^"']*)["']""", re.IGNORECASE)
 ID_RE = re.compile(r"""\bid\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
 CONTACT_HREF_RE = re.compile(r"^(tel:|mailto:)\S+$")
@@ -40,8 +43,25 @@ def validate_files(files: dict[str, str]) -> list[dict]:
     malformed = [f"{n}: {p}" for n in pages for p in html_problems(files[n])]
     checks.append({"name": "html_well_formed", "passed": not malformed, "detail": malformed})
 
-    scripts = [n for n in pages if SCRIPT_RE.search(files[n])]
-    checks.append({"name": "no_script_tags", "passed": not scripts, "detail": scripts})
+    # Script that cannot parse takes the whole page down with it, and the browser is a
+    # slow, expensive way to discover a missing bracket -- the first build to ship
+    # JavaScript spent a full sandbox run to be told "Unexpected token ')'".
+    broken_js = [f"{n}: {p}" for n in pages for p in js_problems(files[n])]
+    checks.append({"name": "javascript_parses", "passed": not broken_js, "detail": broken_js})
+
+    # Scripts themselves are allowed now. What is still fatal is a script that points at
+    # a file this site does not have: there is no local .js anywhere in the five files, so
+    # a relative src is always a 404, and the behaviour the page was built around silently
+    # never runs. Absolute CDN URLs are somebody else's to serve and are left alone.
+    bad_scripts = [
+        f"{n}: <script src={src!r}> is not a file in this site"
+        for n in pages
+        for src in SCRIPT_SRC_RE.findall(files[n])
+        if src and "://" not in src and src.lstrip("./") not in files
+    ]
+    checks.append(
+        {"name": "script_sources_valid", "passed": not bad_scripts, "detail": bad_scripts}
+    )
 
     bad_contact = [
         f"{n}: {href!r}"

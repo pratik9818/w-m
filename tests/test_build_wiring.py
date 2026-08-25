@@ -57,7 +57,7 @@ def stubbed(monkeypatch):
     prompts: list[str] = []
     brief = fallback_brief("bold")
 
-    async def fake_completion(prompt, *, reduced_reasoning=False):
+    async def fake_completion(prompt, *, reduced_reasoning=False, models=None, online=False):
         prompts.append(prompt)
         body = STYLESHEET if "the stylesheet only" in prompt else PAGE_FRAGMENT
         return body, {"model": "stub", "input_tokens": 10, "output_tokens": 20}
@@ -65,8 +65,16 @@ def stubbed(monkeypatch):
     async def fake_brief(spec, spec_json):
         return brief, {"model": "stub", "input_tokens": 5, "output_tokens": 5}
 
+    async def fake_facts(*args, **kwargs):
+        return "", None
+
     monkeypatch.setattr(builder, "call_plain_completion", fake_completion)
     monkeypatch.setattr(builder, "make_design_brief", fake_brief)
+    # research holds its own reference to the client, so stubbing the builder's copy of
+    # call_plain_completion does not reach it -- without this the "offline" suite quietly
+    # made live search calls.
+    monkeypatch.setattr(builder, "facts_for_build", fake_facts)
+    monkeypatch.setattr(builder, "facts_for_edit", fake_facts)
     return prompts, brief
 
 

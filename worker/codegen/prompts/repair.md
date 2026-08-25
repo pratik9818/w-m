@@ -26,8 +26,16 @@ $problems
   Never fill it with an invented address.
 - *"html_well_formed: `</h>` has no matching opening tag"* — a malformed or mismatched tag.
   Correct it to match the element it actually closes.
-- *"no_script_tags"* — delete the `script` element completely. If it was computing
-  something like a copyright year, replace it with the literal value.
+- *"script_sources_valid"* — a `<script src=...>` points at a file this site does not
+  have. Either inline that script's code directly in the `<script>` element, or point it
+  at a full `https://` CDN URL. Do not leave it pointing at a local path.
+- *"javascript_parses"* — the inline `<script>` does not parse: a bracket, quote or
+  comment is unbalanced. Find it and close it. Keep the script's behaviour identical;
+  if you cannot see the mistake, replace that script with the simplest code that does the
+  same job rather than leaving something that cannot run.
+- *"no_console_errors"* — the page's own JavaScript threw. Fix the script: guard every
+  selector before using it, and never call into a library the page never loaded. Deleting
+  the script is the last resort, and then whatever it powered must still work without it.
 - *"internal_links_valid"* — the link points at a page that does not exist. Repoint it at
   one of `index.html`, `about.html`, `services.html`, `contact.html`, or remove the link.
 - *"content_present: words=N"* — the page is too short. Expand the existing sections with

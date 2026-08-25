@@ -1,6 +1,12 @@
 import json
 
-from bot_api.services.openrouter_client import OpenRouterCallFailed, call_forced_tool
+from bot_api.services.openrouter_client import (
+    DailyLimitReached,
+    OpenRouterCallFailed,
+    call_forced_tool,
+)
+from bot_api.services.edit_intent import plan_section
+from bot_api.services.session import render_edit_context
 from db.models import Business
 from worker.codegen.builder import spec_from_business
 from worker.codegen.outline import outline_site
@@ -12,6 +18,20 @@ Current site content:
 {site_outline}{context_section}
 Owner's message:
 {raw_message}
+{plan_section}
+
+## Overlapping elements are never a spacing problem
+
+If the owner says two sections, headings or blocks **overlap**, sit **on top of** each
+other, or that one is **coming over** another, do NOT reach for set_style with margin or
+padding. Space cannot separate elements that overlap: an element only overlaps its
+neighbour when it has been taken out of the normal document flow (`position: absolute` or
+`fixed`), and an element out of the flow ignores every margin you add around it. Adding
+padding usually makes it worse by enlarging the thing that is covering the page.
+
+Use patch_site on `style.css` and say to find the rule that positions that element and put
+it back in the flow. A real owner reported the same overlap six times and got six spacing
+changes, none of which could have worked.
 
 ## Content rules -- read carefully, these have different levels of freedom
 
@@ -395,31 +415,12 @@ def _files_section(business: Business) -> str:
     return LANDING_FILES_SECTION if business.layout == "landing" else MULTIPAGE_FILES_SECTION
 
 
-def _render_context_section(context: list[dict] | None) -> str:
-    if not context:
-        return ""
-    lines = ["\nRecent conversation (most recent last; use this only to resolve a short/ambiguous "
-             "reply that isn't a complete instruction on its own -- if the new message is itself a "
-             "clear, self-contained instruction, act on it directly instead):"]
-    for i, turn in enumerate(context, start=1):
-        lines.append(f'{i}. Owner said: "{turn["raw_message"]}"')
-        outcome = turn["outcome"]
-        if "bot_asked" in outcome:
-            lines.append(f'   You asked: "{outcome["bot_asked"]}"')
-        elif "applied" in outcome:
-            lines.append(f'   You applied: {outcome["applied"]} ({outcome["summary"]})')
-        elif "rejected" in outcome:
-            lines.append(f'   That was rejected: {outcome["rejected"]}')
-        elif "drafted_but_unpublished" in outcome:
-            lines.append(f'   You drafted this {outcome["field"]} text, not yet published: "{outcome["text"]}"')
-    return "\n".join(lines) + "\n"
-
-
 async def parse_edit_message(
     raw_message: str,
     business: Business,
     context: list[dict] | None = None,
     files: dict[str, str] | None = None,
+    plan: dict | None = None,
 ) -> tuple[dict, dict]:
     """Parse a free-text edit message into a structured operation.
 
@@ -438,13 +439,19 @@ async def parse_edit_message(
         site_outline=(
             f"\nWhat is actually on the site right now (the map):\n{outline}\n" if outline else ""
         ),
-        context_section=_render_context_section(context),
+        context_section=render_edit_context(context),
         raw_message=raw_message,
+        plan_section=plan_section(plan),
         files_section=_files_section(business),
     )
 
     try:
         op, usage = await call_forced_tool(prompt, TOOLS)
+    except DailyLimitReached:
+        # Subclasses OpenRouterCallFailed, so without this it would be wrapped into a
+        # generic parse failure and reported as "try again in a moment" -- advice that
+        # cannot work, because the cap resets on the day, not in a moment.
+        raise
     except OpenRouterCallFailed as exc:
         raise EditParseFailed(f"Edit parsing failed: {exc}") from exc
     return op, usage

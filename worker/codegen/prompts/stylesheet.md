@@ -40,6 +40,15 @@ same site every other small business has.
   as a structured multi-column layout.
 - Include hover and focus states for `nav-link`, `btn`, `btn-primary`, `btn-secondary`, links,
   and `card`.
+- **Design the motion, don't leave it to the pages.** Transitions on every interactive
+  element, and `@keyframes` where the design wants them. The pages may add JavaScript that
+  toggles state classes — write rules for the obvious ones (`.is-open` on the mobile nav,
+  `.is-visible` for a scroll-reveal, `.is-active` on a tab or a carousel dot) so that
+  behaviour lands on a styled element rather than an unstyled one. Anything you hide for a
+  reveal must be hidden by one of those JS-added classes, never by default, or the page is
+  blank without JavaScript.
+- Honour `@media (prefers-reduced-motion: reduce)` by cutting transitions and animations
+  down to nothing.
 - Fully responsive using CSS only — flexbox and grid plus media queries. Include **at least
   three media queries** covering large, tablet, and mobile widths, collapsing multi-column
   layouts to single column on narrow screens. The nav must stay usable on mobile without any
@@ -47,6 +56,22 @@ same site every other small business has.
 - On any accent-coloured background (`cta-band`, `btn-primary`, a hero that uses the accent),
   the text colour must be the accent-ink value from the direction above — it is the one that
   is guaranteed readable there.
+
+## The one rule that breaks a page outright
+
+**Never change `position` on a layout container.** `hero`, `page-hero`, `hero-bg`,
+`section`, `section-alt`, `container`, `card`, `cta-band`, the footer — these are the
+boxes the page is stacked out of, and they must stay in the normal document flow.
+
+`hero-bg` in particular is not a backdrop layer. It **is** the hero `<section>` itself,
+carrying its photo as a background image — the markup is
+`<section class="hero hero-bg" style="background-image: url(...)">`. Styling it as an
+absolutely positioned overlay (`position: absolute; inset: 0`) takes the whole hero out of
+the flow, so it reserves no height and the next section renders on top of it. A real site
+shipped exactly that and its owner reported overlapping text six times.
+
+Positioned `::before` / `::after` pseudo-elements are the correct way to build an overlay,
+and are entirely fine — the darkening layer over `hero-bg` is already one.
 
 ## Things that make it look generic — avoid all of them
 

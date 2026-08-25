@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     gemini_api_key: str = ""
     openrouter_api_key: str = ""
+    # Stock photography for generated sites. Absent, builds simply carry no photographs.
+    pexels_api_key: str = ""
     daytona_api_key: str = ""
     cloudflare_api_token: str = ""
     cloudflare_account_id: str = ""
