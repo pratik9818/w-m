@@ -203,6 +203,7 @@ async def run_generation_pipeline(
                 usage["output_tokens"] += repair_usage["output_tokens"]
             if remaining:
                 detail = _describe_checks(remaining)
+                site_version.files = files
                 await _mark_failed(session, business, site_version, "preflight", detail)
                 await notify_owner_failure(bot, business, "sandbox", detail=detail)
                 return
@@ -251,6 +252,7 @@ async def run_generation_pipeline(
             # One repair round on browser-only defects too, then re-test. Anything the
             # markup-level checks could see was already fixed before we got here.
             broken = [c for c in report["checks"] if not c["passed"]]
+            before_repair = files
             try:
                 files, repair_usage, _ = await repair_files(
                     files, broken,
@@ -261,6 +263,11 @@ async def run_generation_pipeline(
                 if repair_usage:
                     usage["input_tokens"] += repair_usage["input_tokens"]
                     usage["output_tokens"] += repair_usage["output_tokens"]
+                # Re-test whenever the repair actually moved the files. Keying this on
+                # repair_usage instead meant a free deterministic fix -- sanitizing, which
+                # costs no call and reports no usage -- was never re-tested, and the build
+                # failed on the stale report of a file it had already corrected.
+                if files != before_repair:
                     report = await sandbox_test(
                         files, previous_files=compare_against,
                         require_visible_change=style_only,
@@ -273,6 +280,13 @@ async def run_generation_pipeline(
 
             if not report["passed"]:
                 detail = _describe_checks([c for c in report["checks"] if not c["passed"]])
+                # Keep the files that failed. Without them a sandbox failure leaves only a
+                # one-line reason and no way to see the page that caused it -- diagnosing
+                # the first broken-JavaScript build meant regenerating a whole site to
+                # guess at what the original had looked like. Safe to store: a version is
+                # only ever served once current_version_id points at it, which happens
+                # after a successful deploy and never here.
+                site_version.files = files
                 await _mark_failed(session, business, site_version, "sandbox", detail)
                 await notify_owner_failure(bot, business, "sandbox", detail=detail)
                 return
@@ -334,7 +348,8 @@ async def run_generation_pipeline(
 CHECK_EXPLANATIONS = {
     "contact_links_valid": "a contact link had no address behind it",
     "html_well_formed": "one of the pages had broken HTML",
-    "no_script_tags": "the page included JavaScript, which these sites don't allow",
+    "script_sources_valid": "the page loaded a script file that isn't part of your site",
+    "javascript_parses": "the page's own code had a syntax error",
     "internal_links_valid": "a menu link pointed at a page that doesn't exist",
     "content_present": "one of the pages came out too short",
     "images_have_src": "an image had no file behind it",

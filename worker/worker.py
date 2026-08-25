@@ -3,11 +3,11 @@
     python -m arq worker.worker.WorkerSettings
 """
 from arq import cron
-from arq.connections import RedisSettings
 
 from bot_api.bot.bot import get_bot
 from bot_api.config import get_settings
 from bot_api.logging_config import configure_logging
+from bot_api.services.queue import redis_settings as build_redis_settings
 from db.base import init_engine
 from worker.tasks.generate import run_generation_pipeline
 from worker.tasks.reaper import reap_stale_builds
@@ -30,7 +30,7 @@ class WorkerSettings:
     # Frees any business left frozen in a busy status by a worker that died mid-job --
     # without it, that owner can never edit their site again.
     cron_jobs = [cron(reap_stale_builds, minute=set(range(0, 60, 5)), run_at_startup=True)]
-    redis_settings = RedisSettings.from_dsn(get_settings().redis_url)
+    redis_settings = build_redis_settings()
     on_startup = on_startup
     on_shutdown = on_shutdown
     max_tries = 1

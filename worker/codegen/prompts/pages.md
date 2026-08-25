@@ -1,4 +1,6 @@
 $shared
+$research
+$photos
 
 ## Your task in this response: $page_names
 
@@ -24,7 +26,8 @@ them yourself would be discarded. Write only the three pieces below, in this ord
 2. `<meta name="description" content="...">` — unique to this page
 3. `<main>` … `</main>` — all of the page's own content
 
-So each file looks exactly like this, and nothing else:
+So each file looks exactly like this, and nothing else — plus any head assets you need
+(`<link>` / `<script src>`), which go between the meta description and `<main>`:
 
 ```html
 <title>Page title here</title>
@@ -32,10 +35,17 @@ So each file looks exactly like this, and nothing else:
 <main>
   <section class="page-hero">…</section>
   <section class="section">…</section>
+  <script>
+    // page behaviour, if this page needs any
+  </script>
 </main>
 ```
 
 - **At least 400 words of real body copy inside `<main>`.** Short pages are a failure.
+- **Give this page one piece of motion or interaction that earns its place** — a reveal as
+  sections scroll into view, a nav that opens on mobile, a gallery that moves, a counter, a
+  hover treatment with real weight. One considered thing beats five twitchy ones, and the
+  page must still read perfectly with the script removed.
 - Use the shared class contract for every structure. Wrap section content in `container`.
 - Only ever link to `index.html`, `about.html`, `services.html` or `contact.html`. Never link
   to a page or an anchor that does not exist.

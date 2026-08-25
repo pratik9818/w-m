@@ -21,7 +21,14 @@ $owner_words
    the request asks to remove one element, remove that one element only.
 6. **Keep every existing class name**, including ones that look unused — the stylesheet and the
    other pages depend on them.
-7. No JavaScript: no `script` elements, no inline event handlers, no `form` elements.
+7. **JavaScript is allowed on this site**, so never strip a `<script>` block, a CDN
+   `<link>`, or a `data-` attribute that is already here — those are working parts of the
+   page, not stray output. You may add or adjust script when the change actually calls for
+   it, in which case: put new libraries in `<head>` (this file has its real head, edit it
+   directly), guard every selector you use, leave the content visible without JavaScript,
+   and produce no console errors — a console error fails the build and the owner's change
+   is lost. `<form>` elements remain the one exception: there is no server to receive a
+   submission.
 8. Do not invent facts. Never add a phone number, email, address, price, opening hours,
    testimonial, award, statistic, founding date, or staff name that is not already in the file
    or given explicitly in the request above.
@@ -34,7 +41,7 @@ $owner_words
 10. Only return the file completely unchanged when nothing in it plausibly corresponds to
     what was asked — not merely because a name did not match.
 
-$reference
+$reference$research
 ## Output format
 
 Reply with ONLY the file below, no explanation before or after. The marker lines must appear

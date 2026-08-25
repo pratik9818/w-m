@@ -11,6 +11,8 @@ and leaves the model to write only what actually needs judgement: the page's own
 """
 import html
 
+from worker.codegen.photos import STOCK_PHOTO_CREDIT_HTML
+
 NAV = (
     ("index.html", "Home"),
     ("about.html", "About"),
@@ -67,9 +69,13 @@ def _header(spec: dict, current: str) -> str:
   </header>"""
 
 
-def _footer(spec: dict) -> str:
+def _footer(spec: dict, stock_photo_credit: bool = False) -> str:
     name = _esc(spec.get("name"))
     year = _esc(spec.get("current_year"))
+    # The credit Pexels asks for in exchange for its free tier. Rendered here, with the
+    # rest of the deterministic shell, because a licence condition left to a model to
+    # remember is not a licence condition that gets met.
+    photo_credit = f"        {STOCK_PHOTO_CREDIT_HTML}\n" if stock_photo_credit else ""
     links = "\n".join(
         f'            <li><a href="{href}" class="nav-link">{label}</a></li>'
         for href, label in _nav_for(spec.get("layout"))
@@ -95,7 +101,7 @@ def _footer(spec: dict) -> str:
       <div class="footer-col">
         <h2 class="footer-title">{name}</h2>
         <p class="footer-note">&copy; {year} {name}. All rights reserved.</p>
-      </div>
+{photo_credit}      </div>
       <div class="footer-col">
         <h2 class="footer-title">Pages</h2>
         <ul class="nav-list">
@@ -113,26 +119,33 @@ def render_page(
     description: str,
     main_html: str,
     font_link: str = "",
+    head_extra: str = "",
+    stock_photo_credit: bool = False,
 ) -> str:
     """Wrap model-written page content in the shared, deterministic document shell.
 
     The font link is placed here rather than asked for, because a family name a model
     invents does not 404 loudly -- the page just quietly renders in Times New Roman.
+
+    `head_extra` carries the CDN stylesheets and libraries the page asked for. It goes in
+    ahead of style.css deliberately: the site's own rules must win the cascade over a
+    third-party one, or an icon pack's opinions start overriding the design.
     """
     fonts = f"\n  {font_link}" if font_link else ""
+    extra = f"\n  {head_extra}" if head_extra else ""
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{_esc(title)}</title>
-  <meta name="description" content="{_esc(description)}">{fonts}
+  <meta name="description" content="{_esc(description)}">{fonts}{extra}
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
 {_header(spec, filename)}
 {main_html.strip()}
-{_footer(spec)}
+{_footer(spec, stock_photo_credit)}
 </body>
 </html>
 """

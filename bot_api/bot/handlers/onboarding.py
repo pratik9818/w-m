@@ -21,6 +21,7 @@ from bot_api.bot.filters import has_text
 from bot_api.bot.states.onboarding import OnboardingStates
 from bot_api.services.business_service import OnboardingSpec, create_business_from_spec
 from bot_api.services.onboarding_ai import BriefParseFailed, parse_business_brief
+from bot_api.services.openrouter_client import DailyLimitReached
 from bot_api.services.queue import enqueue_generation
 from bot_api.services.redis_client import get_redis
 from bot_api.services.session import set_active_business
@@ -104,6 +105,13 @@ async def on_brief(message: Message, state: FSMContext) -> None:
     await message.answer("🧠 Reading that and putting your site together...")
     try:
         op, usage = await parse_business_brief(brief, history)
+    except DailyLimitReached:
+        logger.warning("brief parsing hit the daily limit")
+        await message.answer(
+            "I've hit my daily limit for reading messages — it resets in a few hours. "
+            "Send this again after that and I'll get straight to it."
+        )
+        return
     except BriefParseFailed:
         logger.exception("brief parsing failed")
         await message.answer("Sorry, I couldn't process that just now — please try again in a moment.")

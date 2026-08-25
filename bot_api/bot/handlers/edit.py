@@ -16,13 +16,20 @@ from bot_api.services.edit_ops import (
     apply_edit_operation,
     is_business_busy,
     is_structural_request,
+    layout_answer,
     normalize_patch_targets,
     patch_for_extra_instructions,
     patch_for_field_edit,
     patch_for_service_edit,
     widen_targets_for_pictures,
 )
+from bot_api.services.edit_intent import (
+    EditNotUnderstood,
+    describe_for_owner,
+    understand_edit,
+)
 from bot_api.services.nl_edit import EditParseFailed, parse_edit_message
+from bot_api.services.openrouter_client import DailyLimitReached
 from bot_api.services.queue import enqueue_generation, enqueue_rollback
 from worker.codegen.builder import page_files_for
 from worker.codegen.quota import record_usage
@@ -42,6 +49,35 @@ from db.models import EditLog
 
 logger = logging.getLogger(__name__)
 router = Router(name="edit")
+
+async def _understand(raw_message, business, context, live_files, telegram_user_id, session):
+    """Read the message before anything acts on it. Returns (understanding, usage).
+
+    Never fatal. If the understanding call itself breaks, the edit falls through to the
+    operation parser exactly as it did before this step existed -- a comprehension pass is
+    there to catch misunderstandings, and it must not become a new way for a perfectly
+    clear request to fail.
+    """
+    try:
+        plan, usage = await understand_edit(raw_message, business, context, live_files)
+    except DailyLimitReached:
+        raise
+    except EditNotUnderstood as exc:
+        logger.warning(
+            "edit.understand_failed",
+            extra={"event": "edit.understand_failed", "business_id": str(business.id),
+                   "reason": str(exc)[:300]},
+        )
+        return {"kind": "unclear_but_unasked"}, None
+
+    # Billed like any other read of the owner's message: it costs tokens whether or not it
+    # ends in a change, and a quota that leaves it out is wrong, not merely generous.
+    await record_usage(
+        session, telegram_user_id, business.id, usage["model"],
+        usage["input_tokens"], usage["output_tokens"], kind="parse",
+    )
+    return plan, usage
+
 
 _AFFIRMATIONS = {"yes", "yep", "yeah", "sure", "go ahead", "looks good", "perfect", "publish it", "do it", "confirm", "ok", "okay"}
 _PUNCT_RE = re.compile(r"[.!?]+$")
@@ -64,6 +100,54 @@ def _blast_radius(targets: list[str]) -> str:
     if len(pages) == 1:
         return f"your other pages and your design stay exactly as they are"
     return "your design stays exactly as it is"
+
+
+# One wording, in one place, because two things depend on it being exactly this string:
+# the buffer entry that tells the next message it is an answer, and the check that stops
+# it being asked twice.
+LAYOUT_QUESTION = (
+    "To change how many pages your site has, tell me which you want:\n\n"
+    "• <b>a single landing page</b> — everything on one page, menu scrolls to sections\n"
+    "• <b>a four-page site</b> — separate About, Services and Contact pages\n\n"
+    "Just say which one and I'll rebuild it that way."
+)
+
+
+async def _rebuild_with_layout(
+    message, session, redis, business, telegram_user_id: int, raw_message: str,
+    wanted: str, op: dict | None = None,
+) -> None:
+    """Rebuild the site as a landing page or as four pages.
+
+    Shared by the two ways this is reached: the parser returning `change_layout`, and the
+    owner simply answering the question above. The second used to go the long way round
+    through two model calls and arrive back at the same question.
+    """
+    business.layout = wanted
+    business.generation_status = "queued"
+    session.add(_log(business.id, telegram_user_id, raw_message,
+                     op=op or {"operation": "change_layout", "layout": wanted}, applied=True))
+    await session.commit()
+    business_id, business_name = business.id, business.name
+    await push_edit_turn(redis, business_id, raw_message,
+                         {"applied": "change_layout", "summary": f"rebuilt as a {wanted} site"})
+    await enqueue_generation(business_id, trigger="rebuild")
+    await message.answer(
+        f"Rebuilding <b>{business_name}</b> as "
+        + ("a single landing page — everything on one page, with the menu scrolling "
+           "to each section." if wanted == "landing"
+           else "a four-page site with separate About, Services and Contact pages.")
+        + "\n\nThis writes the site fresh, so the wording and design will change. "
+        "I'll message you when it's live."
+    )
+
+
+def _already_asked_layout(context: list[dict] | None) -> bool:
+    """Has this question already been put to the owner in the last couple of turns?"""
+    for turn in (context or [])[-2:]:
+        if turn.get("outcome", {}).get("bot_asked") == LAYOUT_QUESTION:
+            return True
+    return False
 
 
 def _log(business_id, telegram_user_id: int, raw_message: str, *, op: dict | None = None,
@@ -198,14 +282,93 @@ async def catch_all_edit(message: Message) -> None:
             await clear_pending_edit(redis, business.id)
 
         context = await get_edit_context(redis, business.id)
+
+        # An answer to our own layout question is a layout change and nothing else. Read
+        # here, deterministically, before any model call: sent through the parser instead,
+        # "Single landing page" came back as a patch, tripped the structural guard, and was
+        # answered with the very question it was answering. Two model calls to ask an owner
+        # something they had just told us.
+        if _already_asked_layout(context):
+            answered = layout_answer(raw_message)
+            if answered and business.layout != answered:
+                await _rebuild_with_layout(
+                    message, session, redis, business, telegram_user_id, raw_message, answered
+                )
+                return
+            if answered:
+                # Already that layout. Saying only "it already is" would strand them: the
+                # request that led here was never about the layout in the first place.
+                reply = (
+                    f"<b>{business.name}</b> is already "
+                    + ("a one-page landing site."if answered == "landing" else "a four-page site.")
+                    + "\n\nSo I don't need to rebuild it. Tell me what you'd like changed on "
+                    "the page itself — for example which link or section to remove — and "
+                    "I'll do that instead."
+                )
+                session.add(_log(business.id, telegram_user_id, raw_message,
+                                 error=f"already a {answered} site"))
+                await session.commit()
+                await push_edit_turn(redis, business.id, raw_message, {"bot_asked": reply})
+                await message.answer(reply)
+                return
+
         # The parser used to decide what to change without ever seeing the site, so every
         # class name and every "is that already there?" was a guess.
         live_files = await get_live_files(session, business)
         await message.answer("🧠 Got it — thinking about that...")
+
+        # Understand the message before choosing an operation for it. This is allowed to
+        # stop the whole thing: an ambiguous request becomes a question here, and nothing
+        # downstream runs, so the site is never edited on a guess.
+        plan, understand_usage = await _understand(
+            raw_message, business, context, live_files, telegram_user_id, session
+        )
+        if plan["kind"] == "ask":
+            session.add(_log(business.id, telegram_user_id, raw_message,
+                             error=f"asked: {plan['question'][:200]}"))
+            await session.commit()
+            await push_edit_turn(redis, business.id, raw_message, {"bot_asked": plan["question"]})
+            await message.answer(plan["question"])
+            return
+        if plan["kind"] == "not_a_change":
+            session.add(_log(business.id, telegram_user_id, raw_message))
+            await session.commit()
+            await message.answer(
+                "Not sure that's something I can help edit! If you want to change your site, just tell me "
+                'what to update — e.g. "change my hours to 9-6". Use /mysites to switch sites or /newsite '
+                "to build another."
+            )
+            return
+        if plan["kind"] == "plan":
+            # Say it back before touching anything, so a misreading is visible to the owner
+            # while it is still only words.
+            await message.answer(describe_for_owner(plan))
+
         try:
-            op, parse_usage = await parse_edit_message(raw_message, business, context, live_files)
-        except EditParseFailed:
-            session.add(_log(business.id, telegram_user_id, raw_message, error="edit parsing failed"))
+            op, parse_usage = await parse_edit_message(
+                raw_message, business, context, live_files, plan=plan
+            )
+        except DailyLimitReached:
+            # Not a fault the owner can do anything about by retrying in a moment, which
+            # is exactly what the generic message told them to do.
+            session.add(_log(business.id, telegram_user_id, raw_message, error="daily limit reached"))
+            await session.commit()
+            await message.answer(
+                "I've hit my daily limit for reading messages — it resets in a few hours. "
+                "Your site is safe; send this again after that and I'll pick it up."
+            )
+            return
+        except EditParseFailed as exc:
+            # Logged, not just recorded to the database: without this a failed parse left
+            # bot.log completely silent, and the only trace was a row in edit_log whose
+            # error column said "edit parsing failed" and nothing more.
+            logger.warning(
+                "edit.parse_failed",
+                extra={"event": "edit.parse_failed", "business_id": str(business.id),
+                       "reason": str(exc)[:300]},
+            )
+            session.add(_log(business.id, telegram_user_id, raw_message,
+                             error=f"edit parsing failed: {str(exc)[:300]}"))
             await session.commit()
             await message.answer("Sorry, I couldn't process that just now — please try again in a moment.")
             return
@@ -219,7 +382,11 @@ async def catch_all_edit(message: Message) -> None:
         # Carried into the job so the success message can report what the whole
         # interaction cost. Reading the message is most of a style edit's bill now, and a
         # figure that leaves it out is not a smaller number, it is a wrong one.
-        parse_tokens = parse_usage["input_tokens"] + parse_usage["output_tokens"]
+        parse_tokens = (
+            parse_usage["input_tokens"] + parse_usage["output_tokens"]
+            + (understand_usage["input_tokens"] + understand_usage["output_tokens"]
+               if understand_usage else 0)
+        )
 
         if op["operation"] == "not_an_edit":
             session.add(_log(business.id, telegram_user_id, raw_message, op=op))
@@ -246,24 +413,15 @@ async def catch_all_edit(message: Message) -> None:
         if op["operation"] == "change_layout":
             wanted = "landing" if str(op.get("layout", "")).lower().startswith("land") else "multipage"
             if business.layout == wanted:
+                await push_edit_turn(redis, business.id, raw_message,
+                                     {"rejected": f"already a {wanted} site, so nothing changed"})
                 await message.answer(
                     f"<b>{business.name}</b> is already "
                     + ("a one-page landing site." if wanted == "landing" else "a four-page site.")
                 )
                 return
-            business.layout = wanted
-            business.generation_status = "queued"
-            session.add(_log(business.id, telegram_user_id, raw_message, op=op, applied=True))
-            await session.commit()
-            business_id, business_name = business.id, business.name
-            await enqueue_generation(business_id, trigger="rebuild")
-            await message.answer(
-                f"Rebuilding <b>{business_name}</b> as "
-                + ("a single landing page — everything on one page, with the menu scrolling "
-                   "to each section." if wanted == "landing"
-                   else "a four-page site with separate About, Services and Contact pages.")
-                + "\n\nThis writes the site fresh, so the wording and design will change. "
-                "I'll message you when it's live."
+            await _rebuild_with_layout(
+                message, session, redis, business, telegram_user_id, raw_message, wanted, op=op
             )
             return
 
@@ -282,6 +440,9 @@ async def catch_all_edit(message: Message) -> None:
                 session.add(_log(business.id, telegram_user_id, raw_message, op=op, applied=True))
                 await session.commit()
                 business_id, business_name = business.id, business.name
+                await push_edit_turn(redis, business_id, raw_message,
+                                     {"applied": "rebuild_site",
+                                      "summary": "site had not been built yet, so built it first"})
                 await enqueue_generation(business_id, trigger="rebuild")
                 await message.answer(
                     f"<b>{business_name}</b> hasn't been built yet, so I'm building it now — "
@@ -308,11 +469,13 @@ async def catch_all_edit(message: Message) -> None:
                                  error=f"style change rejected: {exc}"))
                 await session.commit()
                 logger.info("set_style rejected for %s: %s", business.id, exc)
-                await message.answer(
+                question = (
                     "I couldn't work out exactly which part of the page you mean. Tell me a "
                     "word you can see on it — a heading, a button label — and what you'd "
                     "like it to look like, and I'll sort it."
                 )
+                await push_edit_turn(redis, business.id, raw_message, {"bot_asked": question})
+                await message.answer(question)
                 return
 
             entry = _log(business.id, telegram_user_id, raw_message, op=op, applied=True)
@@ -345,25 +508,38 @@ async def catch_all_edit(message: Message) -> None:
 
             # Refuse before spending anything. One such request cost 21,867 tokens across
             # three calls and changed nothing, because patching cannot delete a page.
-            if is_structural_request(instruction) or is_structural_request(raw_message):
+            #
+            # Asking this twice is never right. Either the owner has answered it -- in
+            # which case the answer is a layout change, handled above -- or they have told
+            # us it was the wrong question ("No only remove service elements from top"),
+            # and repeating it cannot produce a different reply. A real owner was sent it
+            # three times in a row, the third time in reply to their own answer.
+            if _already_asked_layout(context):
+                logger.info(
+                    "edit.layout_question_not_repeated",
+                    extra={"event": "edit.layout_question_not_repeated",
+                           "business_id": str(business.id)},
+                )
+            elif is_structural_request(instruction) or is_structural_request(raw_message):
                 session.add(_log(business.id, telegram_user_id, raw_message, op=op,
                                  error="rejected: structural request sent to patch_site"))
                 await session.commit()
-                await message.answer(
-                    "To change how many pages your site has, tell me which you want:\n\n"
-                    "• <b>a single landing page</b> — everything on one page, menu scrolls to sections\n"
-                    "• <b>a four-page site</b> — separate About, Services and Contact pages\n\n"
-                    "Just say which one and I'll rebuild it that way."
-                )
+                # Recorded before it is sent: the owner's answer to this ("a single
+                # landing page") arrives next, and read without the question it looks
+                # like an unprompted remark about the layout rather than a reply.
+                await push_edit_turn(redis, business.id, raw_message, {"bot_asked": LAYOUT_QUESTION})
+                await message.answer(LAYOUT_QUESTION)
                 return
             if not instruction or not targets:
                 session.add(_log(business.id, telegram_user_id, raw_message, op=op,
                                  error="patch_site missing instruction or valid targets"))
                 await session.commit()
-                await message.answer(
+                question = (
                     "I'm not sure which part of your site you mean — could you say which page "
                     "or section it's on?"
                 )
+                await push_edit_turn(redis, business.id, raw_message, {"bot_asked": question})
+                await message.answer(question)
                 return
 
             # Flushed before the enqueue so the job carries the log row's id: without it

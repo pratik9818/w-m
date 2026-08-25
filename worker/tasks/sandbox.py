@@ -28,9 +28,12 @@ CONTACT_HREF_PATTERN = re.compile(r"^(tel:|mailto:)\S+$")
 # a page that renders but says almost nothing is a defect, not a pass.
 MIN_PAGE_WORDS = 150
 
-# Deliberately broken output for proving the harness actually catches failures:
-# a <script> tag (violates Part 2's no-JS constraint), a thrown JS error, and a
-# broken <img> reference. Costs no API calls.
+# Deliberately broken output for proving the harness actually catches failures: a thrown
+# JS error and a broken <img> reference. Costs no API calls.
+#
+# The script element itself is no longer the defect -- sites may ship JavaScript now. What
+# this fixture proves is the check that replaced no_script_tags as the real guard: a script
+# that throws must fail the build, because that is exactly what a broken page looks like.
 BROKEN_FIXTURE: dict[str, str] = {
     "index.html": """<!DOCTYPE html>
 <html lang="en">
@@ -123,7 +126,6 @@ async def sandbox_test(
 
         failed_loads: list[str] = []
         page_errors: list[str] = []
-        script_tags: list[str] = []
         thin_pages: list[str] = []
         broken_images: list[str] = []
         bad_contact: list[str] = []
@@ -148,7 +150,6 @@ async def sandbox_test(
             failed_loads += result["failed_loads"]
             console_errors += result["console_errors"]
             page_errors += result["page_errors"]
-            script_tags += result["script_tags"]
             thin_pages += result["thin_pages"]
             broken_images += result["broken_images"]
             bad_contact += result["bad_contact"]
@@ -163,9 +164,6 @@ async def sandbox_test(
         all_errors = console_errors + page_errors
         checks.append(
             {"name": "no_console_errors", "passed": not all_errors, "detail": all_errors}
-        )
-        checks.append(
-            {"name": "no_script_tags", "passed": not script_tags, "detail": script_tags}
         )
         checks.append(
             {"name": "css_loads", "passed": css_status == 200, "detail": f"status={css_status}"}
@@ -284,18 +282,23 @@ async def _check_page(browser, base_url: str, page_name: str, files: dict[str, s
     concurrently.
     """
     out: dict[str, list] = {
-        "failed_loads": [], "console_errors": [], "page_errors": [], "script_tags": [],
+        "failed_loads": [], "console_errors": [], "page_errors": [],
         "thin_pages": [], "broken_images": [], "bad_contact": [], "broken_internal": [],
     }
     out["css_status"] = None  # type: ignore[assignment]
 
     page = await browser.new_page()
     responses: dict[str, int] = {}
+    # Prefixed with the page name so a repair can be aimed at the file that produced it:
+    # files_needing_repair() reads the filename off the front of each detail, and a bare
+    # "Unexpected token ')'" belongs to no file, so it got broadcast to all of them.
     page.on(
         "console",
-        lambda msg: out["console_errors"].append(msg.text) if msg.type == "error" else None,
+        lambda msg: out["console_errors"].append(f"{page_name}: {msg.text}")
+        if msg.type == "error"
+        else None,
     )
-    page.on("pageerror", lambda exc: out["page_errors"].append(str(exc)))
+    page.on("pageerror", lambda exc: out["page_errors"].append(f"{page_name}: {exc}"))
     page.on("response", lambda resp: responses.update({resp.url: resp.status}))
 
     try:
@@ -306,10 +309,6 @@ async def _check_page(browser, base_url: str, page_name: str, files: dict[str, s
         return out
 
     out["css_status"] = responses.get(f"{base_url}/style.css")  # type: ignore[assignment]
-
-    script_count = await page.locator("script").count()
-    if script_count:
-        out["script_tags"].append(f"{page_name}: {script_count}")
 
     title = await page.title()
     heading_count = await page.locator("h1, h2").count()

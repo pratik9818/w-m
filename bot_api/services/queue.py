@@ -1,16 +1,45 @@
 import uuid
 
 from arq.connections import ArqRedis, RedisSettings, create_pool
+from redis.asyncio.retry import Retry
+from redis.backoff import ExponentialBackoff
 
 from bot_api.config import get_settings
 
 _pool: ArqRedis | None = None
 
+# arq's defaults assume Redis is on the same machine. Ours is Upstash, reached over the
+# public internet, where a TLS handshake regularly takes longer than arq's 1-second
+# default connect timeout. That matters more than it sounds: arq's poll loop does not
+# catch the resulting TimeoutError, so the worker *process exits*. Observed live -- the
+# worker died 60s after starting, a build enqueued six minutes later sat untouched, and
+# the owner watched a "building your site" message for 20 minutes.
+CONNECT_TIMEOUT_SECONDS = 10
+CONNECT_RETRIES = 10
+CONNECT_RETRY_DELAY_SECONDS = 2
+COMMAND_RETRIES = 3
+
+
+def redis_settings() -> RedisSettings:
+    """Connection settings tolerant of a slow or briefly unreachable Redis.
+
+    Shared by the enqueue side and the worker so the two cannot drift apart.
+    """
+    settings = RedisSettings.from_dsn(get_settings().redis_url)
+    settings.conn_timeout = CONNECT_TIMEOUT_SECONDS
+    settings.conn_retries = CONNECT_RETRIES
+    settings.conn_retry_delay = CONNECT_RETRY_DELAY_SECONDS
+    # Retries the individual command as well, so a blip *mid-poll* is absorbed rather
+    # than propagating out of the poll loop and taking the process down with it.
+    settings.retry_on_timeout = True
+    settings.retry = Retry(ExponentialBackoff(cap=5, base=0.5), retries=COMMAND_RETRIES)
+    return settings
+
 
 async def get_arq_pool() -> ArqRedis:
     global _pool
     if _pool is None:
-        _pool = await create_pool(RedisSettings.from_dsn(get_settings().redis_url))
+        _pool = await create_pool(redis_settings())
     return _pool
 
 
