@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot_api.logging_config import add_run_fields, log_event, start_run
 from bot_api.services.business_service import get_business_by_id
-from bot_api.services.openrouter_client import DailyLimitReached
+from bot_api.services.llm_client import DailyLimitReached
 from bot_api.services.redis_client import get_redis
 from bot_api.services.session import correct_last_edit_turn
 from db.base import session_scope
@@ -305,7 +305,9 @@ async def run_generation_pipeline(
 
         stage_started = time.monotonic()
         try:
-            project_name, live_url = await deploy_to_cloudflare_pages(business, files)
+            # `files` comes back rewritten: a first build learns its own address here,
+            # and the version record has to hold what was actually served.
+            project_name, live_url, files = await deploy_to_cloudflare_pages(business, files)
         except CloudflareDeployError as exc:
             await _mark_failed(session, business, site_version, "deploy", str(exc))
             await notify_owner_failure(bot, business, "deploy")

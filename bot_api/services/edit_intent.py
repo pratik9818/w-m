@@ -25,9 +25,9 @@ rather than flattening them into whichever one the model noticed first.
 import json
 import logging
 
-from bot_api.services.openrouter_client import (
+from bot_api.services.llm_client import (
     DailyLimitReached,
-    OpenRouterCallFailed,
+    LLMCallFailed,
     call_forced_tool,
 )
 from bot_api.services.session import render_edit_context
@@ -262,7 +262,7 @@ async def understand_edit(
         op, usage = await call_forced_tool(prompt, TOOLS)
     except DailyLimitReached:
         raise
-    except OpenRouterCallFailed as exc:
+    except LLMCallFailed as exc:
         raise EditNotUnderstood(f"Could not read that message: {exc}") from exc
 
     plan = _plan_from(op)

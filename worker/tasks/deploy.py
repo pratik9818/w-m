@@ -20,6 +20,7 @@ import httpx
 
 from bot_api.config import get_settings
 from db.models import Business
+from worker.codegen.seo import finalise_urls
 
 API_BASE = "https://api.cloudflare.com/client/v4"
 
@@ -28,12 +29,18 @@ class CloudflareDeployError(Exception):
     pass
 
 
-async def deploy_to_cloudflare_pages(business: Business, files: dict[str, str]) -> tuple[str, str]:
+async def deploy_to_cloudflare_pages(
+    business: Business, files: dict[str, str]
+) -> tuple[str, str, dict[str, str]]:
     """Deploy `files` (filename -> content) to a Cloudflare Pages project for `business`.
 
     Creates the project on first deploy, reuses it on subsequent ones (keyed by
     business.cf_pages_project_name so the owner's URL never changes across re-deploys).
-    Returns (project_name, stable_pages_dev_url).
+
+    Returns (project_name, stable_pages_dev_url, files_as_deployed). The third is not the
+    dict that came in: a first build cannot know its own address, so its canonical tags and
+    sitemap are filled in here. The caller stores *these* bytes, because the version record
+    has to be what is actually live -- the next edit patches against it.
     """
     settings = get_settings()
     account_id = settings.cloudflare_account_id
@@ -47,12 +54,19 @@ async def deploy_to_cloudflare_pages(business: Business, files: dict[str, str]) 
         else:
             subdomain = await _ensure_project(client, headers, account_id, project_name)
 
+        # The first build of a new project is written before anyone knows what Cloudflare
+        # will call it -- the subdomain carries a random suffix when the name is taken, so
+        # it cannot be predicted, only asked for. It is known by this line, and the pages
+        # left a marker where their canonical tag belongs, so it goes in now. Every later
+        # build already has the address and leaves no marker for this to find.
+        files = finalise_urls(files, f"https://{subdomain}")
+
         manifest = {f"/{name}": _hash_file(name, content) for name, content in files.items()}
         upload_jwt = await _get_upload_jwt(client, headers, account_id, project_name)
         await _upload_assets(client, upload_jwt, files, manifest)
         await _create_deployment(client, headers, account_id, project_name, manifest)
 
-    return project_name, f"https://{subdomain}"
+    return project_name, f"https://{subdomain}", files
 
 
 def _hash_file(filename: str, content: str) -> str:
@@ -174,4 +188,13 @@ def _content_type(filename: str) -> str:
         return "text/html"
     if filename.endswith(".css"):
         return "text/css"
+    if filename.endswith(".js"):
+        return "text/javascript"
+    # Crawlers are strict about these two in a way browsers are not: served as
+    # application/octet-stream, a sitemap is downloaded rather than read, and the whole
+    # point of writing one is lost silently.
+    if filename.endswith(".xml"):
+        return "application/xml"
+    if filename.endswith(".txt"):
+        return "text/plain"
     return "application/octet-stream"

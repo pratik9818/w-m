@@ -122,6 +122,78 @@ def layout_answer(text: str) -> str | None:
 # both times -- the <img> it needed to move was in index.html, which was never opened.
 PICTURE_WORDS = ("image", "photo", "picture", "background", "banner", "logo")
 
+_PICTURE_NOUN = r"(?:images?|photos?|photographs?|pictures?|pics?|logos?|banners?)"
+# Asking for a picture the site does not have yet. Deliberately narrower than "mentions a
+# picture": making one smaller, moving one, or deleting one are all about a picture that
+# already exists, and offering to go and find one in reply to those would be answering a
+# question nobody asked.
+_WANTS_PICTURE_RE = re.compile(
+    # The trailing `s?` throughout is not decoration: "the site needs photos" is how an
+    # owner phrases this, and `\bneed\b` does not match "needs".
+    rf"\b(?:adds?|puts?|inserts?|places?|includes?|shows?|needs?|wants?|uploads?|uses?|"
+    rf"changes?|replaces?|swaps?|updates?|new|another|different|more|missing)"
+    rf"\b[^.?!]{{0,40}}\b{_PICTURE_NOUN}\b"
+    rf"|\b{_PICTURE_NOUN}\b[^.?!]{{0,30}}\b(?:missing|empty|blank|needed|required)\b"
+    rf"|\bno\s+{_PICTURE_NOUN}\b",
+    re.IGNORECASE,
+)
+# These are about a picture that is already on the page.
+_EXISTING_PICTURE_RE = re.compile(
+    rf"\b(?:remove|delete|drop|get rid of|hide|resize|shrink|enlarge|crop|move|"
+    rf"bigger|smaller|larger|wider|taller|rounder|round(?:ed)?)\b[^.?!]{{0,40}}\b{_PICTURE_NOUN}\b"
+    rf"|\b{_PICTURE_NOUN}\b[^.?!]{{0,30}}\b(?:bigger|smaller|larger|wider|taller|"
+    rf"too big|too small)\b",
+    re.IGNORECASE,
+)
+
+
+def wants_a_picture(text: str) -> bool:
+    """Is this a request for a picture the site does not have yet?
+
+    Worth telling apart because it is the one request the bot cannot simply carry out. It
+    needs a photograph from somewhere, and there are two somewheres -- the owner's phone,
+    or a stock library -- and owners do not know the second one exists. Asked plainly, a
+    real owner wrote "there are no images whole website is empty" and then waited, because
+    nothing had ever told them they could send one.
+    """
+    body = text or ""
+    if _EXISTING_PICTURE_RE.search(body):
+        return False
+    return bool(_WANTS_PICTURE_RE.search(body))
+
+
+_OWN_PICTURE_RE = re.compile(
+    # `i'?ll` deliberately also matches the apostrophe-less "ill", which is how people
+    # actually type it in a chat window.
+    r"\b(?:i'?ll|i will|i'?m|i am|i)\b[^.?!]{0,15}"
+    r"\b(?:send|sending|upload|uploading|attach|attaching|share|give|have|got|post)\b"
+    r"|\b(?:sending|uploading|attaching) (?:it|one|them|a )\b"
+    r"|\bmine\b|\bmy own\b|\bown (?:photos?|pictures?|images?)\b"
+    r"|\bwait\b|\bhold on\b|\bone (?:sec|second|moment|minute)\b",
+    re.IGNORECASE,
+)
+_FIND_PICTURE_RE = re.compile(
+    r"\byou\b[^.?!]{0,20}\b(?:find|choose|pick|add|get|select|source|decide)\b"
+    r"|\b(?:find|choose|pick|get|source)\b[^.?!]{0,20}\b(?:one|it|some|a picture|a photo)\b"
+    r"|\bstock\b|\bany(?:thing)? (?:is )?fine\b|\bwhatever\b|\bup to you\b|\byour choice\b"
+    r"|\bdon'?t have (?:one|any|a photo|a picture)\b|\bno (?:photos?|pictures?|images?)\b",
+    re.IGNORECASE,
+)
+
+
+def picture_source_answer(text: str) -> str | None:
+    """"own" if they are sending one, "find" if we should, None if neither.
+
+    `find` is checked first: "I don't have one, you pick" says both things, and the half
+    that decides what happens next is the second one.
+    """
+    body = text or ""
+    if _FIND_PICTURE_RE.search(body):
+        return "find"
+    if _OWN_PICTURE_RE.search(body):
+        return "own"
+    return None
+
 
 def widen_targets_for_pictures(instruction: str, targets: list[str]) -> list[str]:
     """Add a page file when a picture change was aimed at the stylesheet alone.

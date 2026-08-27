@@ -1,8 +1,8 @@
 import json
 
-from bot_api.services.openrouter_client import (
+from bot_api.services.llm_client import (
     DailyLimitReached,
-    OpenRouterCallFailed,
+    LLMCallFailed,
     call_forced_tool,
 )
 from bot_api.services.edit_intent import plan_section
@@ -448,10 +448,10 @@ async def parse_edit_message(
     try:
         op, usage = await call_forced_tool(prompt, TOOLS)
     except DailyLimitReached:
-        # Subclasses OpenRouterCallFailed, so without this it would be wrapped into a
+        # Subclasses LLMCallFailed, so without this it would be wrapped into a
         # generic parse failure and reported as "try again in a moment" -- advice that
         # cannot work, because the cap resets on the day, not in a moment.
         raise
-    except OpenRouterCallFailed as exc:
+    except LLMCallFailed as exc:
         raise EditParseFailed(f"Edit parsing failed: {exc}") from exc
     return op, usage

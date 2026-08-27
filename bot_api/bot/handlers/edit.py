@@ -1,16 +1,23 @@
 import logging
-import re
 import uuid
 
 from aiogram import Router
 from aiogram.fsm.state import default_state
 from aiogram.types import Message
 
+from bot_api.bot.filters import is_affirmation
+from bot_api.services.assistant import (
+    answer_from_facts,
+    answer_or_fallback,
+    looks_like_a_question,
+    owner_facts,
+)
 from bot_api.services.business_service import (
     get_business_by_id,
     get_live_files,
     list_businesses_for_owner,
 )
+from bot_api.bot.handlers.photos import CONFIRMATION, PLACEMENTS, placement_from_text
 from bot_api.services.edit_ops import (
     ValidationError,
     apply_edit_operation,
@@ -21,6 +28,8 @@ from bot_api.services.edit_ops import (
     patch_for_extra_instructions,
     patch_for_field_edit,
     patch_for_service_edit,
+    picture_source_answer,
+    wants_a_picture,
     widen_targets_for_pictures,
 )
 from bot_api.services.edit_intent import (
@@ -29,9 +38,10 @@ from bot_api.services.edit_intent import (
     understand_edit,
 )
 from bot_api.services.nl_edit import EditParseFailed, parse_edit_message
-from bot_api.services.openrouter_client import DailyLimitReached
+from bot_api.services.llm_client import DailyLimitReached
 from bot_api.services.queue import enqueue_generation, enqueue_rollback
-from worker.codegen.builder import page_files_for
+from worker.codegen.builder import page_files_for, spec_from_business
+from worker.codegen.photos import find_one_photo
 from worker.codegen.quota import record_usage
 from worker.codegen.style_ops import StyleAlreadySet, StyleOpFailed, apply_style_changes
 from worker.tasks.deploy import delete_pages_project
@@ -79,17 +89,53 @@ async def _understand(raw_message, business, context, live_files, telegram_user_
     return plan, usage
 
 
-_AFFIRMATIONS = {"yes", "yep", "yeah", "sure", "go ahead", "looks good", "perfect", "publish it", "do it", "confirm", "ok", "okay"}
-_PUNCT_RE = re.compile(r"[.!?]+$")
-
-
 def _is_not_a_command(message: Message) -> bool:
     return bool(message.text) and not message.text.startswith("/")
 
 
-def _is_affirmation(text: str) -> bool:
-    normalized = _PUNCT_RE.sub("", text.strip().lower())
-    return normalized in _AFFIRMATIONS
+async def _answer_as_assistant(
+    message, session, redis, business, telegram_user_id: int, raw_message: str,
+    businesses: list, context: list[dict] | None = None,
+) -> None:
+    """Answer something that is not a change to a website.
+
+    Reached from every place this handler used to give up. An owner asking where their link
+    is, what they have left, or what any of this means was told they had asked wrongly and
+    pointed at two slash commands -- which is a reasonable reply to someone who knows what
+    this bot is, and useless to everyone actually using it.
+
+    The facts are read from the database first and handed to the model, never recalled by
+    it: a confidently wrong web address is worse than no answer at all.
+    """
+    active_id = business.id if business is not None else None
+    facts = await owner_facts(session, telegram_user_id, businesses, active_id)
+
+    # The questions asked constantly, each with exactly one right answer. Paying a model to
+    # compose "here is your link" would be paying for a worse version of a column lookup.
+    reply = answer_from_facts(raw_message, facts)
+    usage = None
+    if reply is None:
+        reply, usage = await answer_or_fallback(raw_message, facts, context)
+        if usage:
+            await record_usage(
+                session, telegram_user_id, business.id if business else None,
+                usage["model"], usage["input_tokens"], usage["output_tokens"], kind="parse",
+            )
+
+    logger.info(
+        "assistant.answered",
+        extra={"event": "assistant.answered", "from_facts": usage is None,
+               "sites": len(facts["sites"])},
+    )
+    if business is not None:
+        session.add(_log(business.id, telegram_user_id, raw_message,
+                         error="answered as a question, not an edit"))
+        await session.commit()
+        # Recorded like any other thing the bot said. "How many pages does it have?"
+        # followed by "make that one bigger" is one conversation, and the second half is
+        # unreadable without the first.
+        await push_edit_turn(redis, business.id, raw_message, {"bot_said": reply[:400]})
+    await message.answer(reply)
 
 
 def _blast_radius(targets: list[str]) -> str:
@@ -100,6 +146,83 @@ def _blast_radius(targets: list[str]) -> str:
     if len(pages) == 1:
         return f"your other pages and your design stay exactly as they are"
     return "your design stays exactly as it is"
+
+
+# Nothing that rewrites a site happens until the owner has said yes to it. This rides in
+# the same pending-confirmation slot as the drafted-copy flow, so an owner can only ever
+# have one thing waiting on an answer, and a second request replaces the first rather than
+# queueing behind it.
+PENDING_CONFIRM = "__confirm__"
+
+_FIELD_LABELS = {
+    "name": "business name", "tagline": "tagline", "about": "about section",
+    "phone": "phone number", "email": "email", "address": "address",
+    "theme": "look", "hours": "opening hours",
+}
+# Past this, quoting the new value back makes the question harder to read than the change
+# it is asking about.
+_QUOTE_VALUE_MAX_CHARS = 80
+
+
+def _spec_change_description(op: dict) -> str:
+    """A change to the saved business details, described with the value it would commit to.
+
+    The value is the point. "Update your phone number" reads as perfectly fine right up
+    until the number is wrong, and catching that while it is still only words is the whole
+    reason for asking first.
+    """
+    operation = op["operation"]
+    if operation == "add_service":
+        name = str(op.get("name") or "a new service").strip()
+        price = str(op.get("price_label") or "").strip()
+        return f'add "{name}"{f" ({price})" if price else ""} to your services'
+    if operation == "update_service":
+        return f'update your "{str(op.get("current_name") or "").strip()}" service'
+    if operation == "remove_service":
+        return f'remove "{str(op.get("name") or "").strip()}" from your services'
+    if operation == "update_extra_instructions":
+        return "remember that for the next time your site is rebuilt"
+
+    parts = []
+    for field, label in _FIELD_LABELS.items():
+        if field not in op:
+            continue
+        value = str(op[field]).strip()
+        parts.append(
+            f'set your {label} to "{value}"' if len(value) <= _QUOTE_VALUE_MAX_CHARS
+            else f"rewrite your {label}"
+        )
+    return " and ".join(parts) if parts else "make that change"
+
+
+def _confirmation_message(op: dict, business_name: str) -> str:
+    """What is about to happen, put back to the owner as a question.
+
+    Every branch below acts on the site the moment it is reached -- it rewrites files,
+    spends tokens on a build, and publishes the result. That is right when the owner asked
+    for it and wrong when they did not, and the bot cannot tell those apart: a note typed
+    into the wrong chat window reads exactly like an instruction. So it asks.
+    """
+    operation = op["operation"]
+    if operation == "change_layout":
+        wanted = "landing" if str(op.get("layout", "")).lower().startswith("land") else "multipage"
+        doing = ("rebuild it as a single landing page, with everything on one page"
+                 if wanted == "landing"
+                 else "rebuild it as a four-page site, with separate About, Services and "
+                      "Contact pages")
+    elif operation == "set_style":
+        doing = (op.get("summary") or "").strip() or "update the styling"
+    elif operation == "patch_site":
+        doing = (op.get("instruction") or "").strip() or "make that change"
+    else:
+        doing = _spec_change_description(op)
+    if doing:
+        doing = doing[0].lower() + doing[1:]
+    return (
+        f"Just to check before I touch anything — you want me to {doing}?\n\n"
+        'Reply <b>yes</b> and I\'ll get on with it. Anything else and I\'ll leave '
+        f"<b>{business_name}</b> exactly as it is."
+    )
 
 
 # One wording, in one place, because two things depend on it being exactly this string:
@@ -139,6 +262,110 @@ async def _rebuild_with_layout(
            else "a four-page site with separate About, Services and Contact pages.")
         + "\n\nThis writes the site fresh, so the wording and design will change. "
         "I'll message you when it's live."
+    )
+
+
+# Both halves are named, because owners do not know the second one exists. A real owner
+# wrote "there are no images whole website is empty except header and bottom" and then
+# waited: nothing in the bot had ever told them they could send a picture, and nothing had
+# told them it could go and find one either.
+PICTURE_QUESTION = (
+    "Happy to sort that out — two ways we can do it:\n\n"
+    "📎 <b>Send me your own picture.</b> Just attach it to this chat and I'll ask where "
+    "you want it. Your own photos always look better than stock ones.\n"
+    "🔎 <b>Or I can find one for you</b> — a real photograph that suits your business, "
+    "free to use commercially.\n\n"
+    "Which would you like? Send the picture, or just say <i>\"you find one\"</i>."
+)
+
+
+def _photo_already_in_hand(context: list[dict] | None) -> bool:
+    """Has the owner sent a photograph recently enough to still be talking about it?
+
+    Offering to go and find a picture for someone who has just sent one is the bot failing
+    to notice what is in front of it. A real owner sent a photo, was asked where it should
+    go, said "Put this image in 2 section and remove current one", and was asked whether
+    they had a picture to send.
+
+    The whole buffer is searched rather than the last turn or two: the conversation can
+    easily run "here is a photo" -> "where do you want it?" -> "actually make the heading
+    bigger first" -> "right, now the photo", and the picture is still the one they sent.
+    """
+    return any("photo_url" in turn.get("outcome", {}) for turn in (context or []))
+
+
+def _already_asked_picture(context: list[dict] | None) -> bool:
+    """Has the picture question already been put to this owner in the last couple of turns?"""
+    for turn in (context or [])[-2:]:
+        if turn.get("outcome", {}).get("bot_asked") == PICTURE_QUESTION:
+            return True
+    return False
+
+
+async def _add_a_found_photo(
+    message, session, redis, business, telegram_user_id: int, raw_message: str,
+    context: list[dict] | None,
+) -> None:
+    """Find a stock photograph for this business and put it on the page.
+
+    Reached only by an owner answering the question above with "you find one", which is why
+    it acts without a further confirmation: they have just been asked and have just
+    answered. Costs no model call -- the search words come from their own words and their
+    category.
+    """
+    spec = spec_from_business(business)
+    # Their original request, not the "you find one" -- "a picture of fresh bread" is in
+    # the first message and is what makes the search worth running.
+    hint = next(
+        (t["raw_message"] for t in reversed(context or [])
+         if t.get("outcome", {}).get("bot_asked") == PICTURE_QUESTION),
+        "",
+    )
+    photo = await find_one_photo(spec, hint)
+
+    if photo is None:
+        reply = (
+            "I couldn't find a photograph that fit, I'm afraid. If you have one of your "
+            "own, send it straight into this chat and I'll put it wherever you'd like."
+        )
+        session.add(_log(business.id, telegram_user_id, raw_message,
+                         error="no stock photograph found"))
+        await session.commit()
+        await push_edit_turn(redis, business.id, raw_message, {"bot_asked": reply})
+        await message.answer(reply)
+        return
+
+    # Where they asked for it in the first place, falling back to the top of the page --
+    # which is where "add a picture" means, and the only spot a site is sure to have.
+    placement = placement_from_text(hint) or placement_from_text(raw_message) or "hero"
+    _kind, instruction_template = PLACEMENTS[placement]
+    pages = list(page_files_for(business.layout))
+    targets = pages if placement == "logo" else [pages[0]]
+
+    entry = _log(business.id, telegram_user_id, raw_message,
+                 op={"operation": "patch_site", "found_photo": photo["url"]}, applied=True)
+    business.generation_status = "queued"
+    session.add(entry)
+    await session.flush()
+    edit_log_id = str(entry.id)
+    await session.commit()
+    business_id, business_name = business.id, business.name
+
+    await push_edit_turn(
+        redis, business_id, raw_message,
+        {"photo_url": photo["url"], "applied": "patch_site",
+         "summary": f"found a photograph and put it {CONFIRMATION[placement]}"},
+    )
+    await enqueue_generation(
+        business_id, trigger="edit",
+        patch={"instruction": instruction_template.format(url=photo["url"], name=business_name),
+               "targets": targets, "user_message": raw_message, "edit_log_id": edit_log_id},
+    )
+    credit = f" (by {photo['photographer']}, via Pexels)" if photo.get("photographer") else ""
+    await message.answer(
+        f"Found one{credit} — {CONFIRMATION[placement]}.\n\n"
+        "I'll message you when it's live. If it isn't right, tell me and I'll swap it, or "
+        "send me one of your own."
     )
 
 
@@ -183,8 +410,12 @@ async def catch_all_edit(message: Message) -> None:
                 business = businesses[0]
 
         if business is None:
-            await message.answer(
-                "Not sure what you'd like to do! Use /mysites to pick a site, or /newsite to build one."
+            # No site to edit, which does not mean nothing to say. This is where a brand
+            # new owner lands when they open the bot and type a question, and the old
+            # reply named two slash commands at someone who had never seen one.
+            businesses = await list_businesses_for_owner(session, telegram_user_id)
+            await _answer_as_assistant(
+                message, session, redis, None, telegram_user_id, raw_message, businesses,
             )
             return
 
@@ -208,8 +439,19 @@ async def catch_all_edit(message: Message) -> None:
         # A previously-drafted tagline/about is waiting on a yes/no before publishing.
         pending = await get_pending_edit(redis, business.id)
         if pending is not None:
-            if _is_affirmation(raw_message):
+            if is_affirmation(raw_message):
                 await clear_pending_edit(redis, business.id)
+
+                # The yes that releases an ordinary edit. Everything needed to carry it
+                # out was worked out before the question was asked, so answering costs
+                # nothing further to read -- the operation is replayed, not re-parsed.
+                if pending["operation"] == PENDING_CONFIRM:
+                    await _apply_operation(
+                        message, redis, business.id, telegram_user_id,
+                        pending.get("raw_message") or raw_message,
+                        pending["op"], pending.get("parse_tokens") or 0,
+                    )
+                    return
 
                 # Restores already-published bytes -- no model call, so nothing new can
                 # creep in and it costs no quota.
@@ -312,6 +554,46 @@ async def catch_all_edit(message: Message) -> None:
                 await message.answer(reply)
                 return
 
+        # Asking for a picture the site does not have is the one request that cannot just
+        # be carried out -- it needs a photograph from somewhere. Handled here, before the
+        # two model calls below, because the answer is a question either way and paying to
+        # find that out is paying for nothing.
+        if _already_asked_picture(context):
+            source = picture_source_answer(raw_message)
+            if source == "own":
+                reply = (
+                    "Perfect — send it over whenever you're ready, straight into this chat. "
+                    "I'll ask where you'd like it once it arrives."
+                )
+                session.add(_log(business.id, telegram_user_id, raw_message))
+                await session.commit()
+                await push_edit_turn(redis, business.id, raw_message, {"bot_asked": reply})
+                await message.answer(reply)
+                return
+            if source == "find":
+                await _add_a_found_photo(
+                    message, session, redis, business, telegram_user_id, raw_message, context
+                )
+                return
+        elif wants_a_picture(raw_message) and not _photo_already_in_hand(context):
+            session.add(_log(business.id, telegram_user_id, raw_message))
+            await session.commit()
+            await push_edit_turn(redis, business.id, raw_message, {"bot_asked": PICTURE_QUESTION})
+            await message.answer(PICTURE_QUESTION)
+            return
+
+        # A question with a stored answer -- "what's my link", "how much have I got left",
+        # "what can you do". Answered here, before the two model calls below, because the
+        # answer is a column and reading the message to discover that is not worth paying
+        # for. Placed after the two answer-shortcuts above so a reply to the bot's own
+        # question is never mistaken for a fresh one.
+        if looks_like_a_question(raw_message):
+            await _answer_as_assistant(
+                message, session, redis, business, telegram_user_id, raw_message,
+                [business], context,
+            )
+            return
+
         # The parser used to decide what to change without ever seeing the site, so every
         # class name and every "is that already there?" was a guess.
         live_files = await get_live_files(session, business)
@@ -333,10 +615,9 @@ async def catch_all_edit(message: Message) -> None:
         if plan["kind"] == "not_a_change":
             session.add(_log(business.id, telegram_user_id, raw_message))
             await session.commit()
-            await message.answer(
-                "Not sure that's something I can help edit! If you want to change your site, just tell me "
-                'what to update — e.g. "change my hours to 9-6". Use /mysites to switch sites or /newsite '
-                "to build another."
+            await _answer_as_assistant(
+                message, session, redis, business, telegram_user_id, raw_message,
+                [business], context,
             )
             return
         if plan["kind"] == "plan":
@@ -391,10 +672,9 @@ async def catch_all_edit(message: Message) -> None:
         if op["operation"] == "not_an_edit":
             session.add(_log(business.id, telegram_user_id, raw_message, op=op))
             await session.commit()
-            await message.answer(
-                "Not sure that's something I can help edit! If you want to change your site, just tell me "
-                'what to update — e.g. "change my hours to 9-6". Use /mysites to switch sites or /newsite '
-                "to build another."
+            await _answer_as_assistant(
+                message, session, redis, business, telegram_user_id, raw_message,
+                [business], context,
             )
             return
 
@@ -404,6 +684,101 @@ async def catch_all_edit(message: Message) -> None:
             await push_edit_turn(redis, business.id, raw_message, {"bot_asked": op["question"]})
             await message.answer(op["question"])
             return
+
+        # A full rebuild discards the current design, so it asks in its own words -- they
+        # explain a consequence ("replacing all four pages and the current look") that the
+        # generic confirmation below cannot express.
+        if op["operation"] == "rebuild_site":
+            await set_pending_edit(redis, business.id, op)
+            session.add(_log(business.id, telegram_user_id, raw_message, op=op, applied=False))
+            await session.commit()
+            await push_edit_turn(redis, business.id, raw_message, {"bot_asked": "confirm rebuild"})
+            await message.answer(
+                f"Just to check — that will rebuild <b>{business.name}</b> from scratch with a "
+                "brand-new design, replacing all four pages and the current look. Your saved "
+                'details stay.\n\nReply "yes" to go ahead, or tell me what to change instead.'
+            )
+            return
+
+        # Model-composed tagline/about text shows the owner the words themselves rather
+        # than a summary of them, which no generic confirmation can do.
+        drafted_field = None
+        if op["operation"] == "update_business_info" and op.get("drafted"):
+            if "about" in op:
+                drafted_field = "about"
+            elif "tagline" in op:
+                drafted_field = "tagline"
+        if drafted_field is not None:
+            drafted_text = op[drafted_field]
+            await set_pending_edit(redis, business.id, op)
+            session.add(_log(business.id, telegram_user_id, raw_message, op=op, applied=False))
+            await session.commit()
+            await push_edit_turn(
+                redis, business.id, raw_message,
+                {"drafted_but_unpublished": True, "field": drafted_field, "text": drafted_text},
+            )
+            await message.answer(
+                f"Here's what I drafted for your {drafted_field}:\n\n{drafted_text}\n\n"
+                'Reply "yes" to publish it, or tell me what to change.'
+            )
+            return
+
+        # ------------------------------------------------------------------ the gate
+        #
+        # Everything past this point rewrites the owner's site: it edits stored files,
+        # spends tokens on a build, and publishes the result over what is already live.
+        # Until now the parser's answer went straight to all of that, so a message typed
+        # into the wrong chat window -- a note to themselves, a reply meant for someone
+        # else -- was indistinguishable from an instruction and was carried out like one.
+        #
+        # So the operation is put back to the owner in their own terms and parked. Nothing
+        # is written and nothing is queued; `_apply_operation` below is what actually acts,
+        # and it only runs from the affirmation branch at the top of this handler. A reply
+        # that is not a yes clears the pending record and is read as a fresh request, so
+        # correcting the bot costs one message rather than a build.
+        await set_pending_edit(redis, business.id, {
+            "operation": PENDING_CONFIRM,
+            "op": op,
+            # The original request, not the "yes": it is what belongs in the edit log and
+            # in the conversation buffer, and what the build is ultimately traced back to.
+            "raw_message": raw_message,
+            "parse_tokens": parse_tokens,
+        })
+        session.add(_log(business.id, telegram_user_id, raw_message, op=op, applied=False))
+        await session.commit()
+        question = _confirmation_message(op, business.name)
+        await push_edit_turn(redis, business.id, raw_message, {"bot_asked": question})
+        await message.answer(question)
+        return
+
+
+async def _apply_operation(
+    message: Message, redis, business_id: uuid.UUID, telegram_user_id: int,
+    raw_message: str, op: dict, parse_tokens: int = 0,
+) -> None:
+    """Carry out an operation the owner has confirmed.
+
+    Reached only from the affirmation branch of `catch_all_edit`, which is what makes the
+    gate above real: this is the whole of the acting half of the handler, and there is no
+    other way in. It opens its own session because the yes arrives as a separate message
+    from the request it answers, so nothing from that earlier turn is still attached.
+    """
+    async with session_scope() as session:
+        business = await get_business_by_id(session, business_id, telegram_user_id)
+        if business is None:
+            await message.answer("That site isn't there any more — use /mysites to pick another.")
+            return
+        # Re-read rather than carried through the confirmation: a build can have finished,
+        # or another change landed, in the time it took the owner to answer.
+        if is_business_busy(business):
+            await message.answer(
+                f"Hang tight — <b>{business.name}</b> is already being updated "
+                f"(status: <b>{business.generation_status}</b>). Try again in a minute or two!"
+            )
+            return
+        context = await get_edit_context(redis, business_id)
+        live_files = await get_live_files(session, business)
+        site_files = [*page_files_for(business.layout), "style.css"]
 
         # A surgical change to something already on the site. Nothing in the spec changes --
         # the instruction is applied straight to the stored files, so every page and every
@@ -564,44 +939,6 @@ async def catch_all_edit(message: Message) -> None:
             await message.answer(
                 f"On it — {instruction[0].lower() + instruction[1:] if instruction else instruction}\n\n"
                 f"Only that changes; {_blast_radius(targets)}. I'll message you when it's live!"
-            )
-            return
-
-        # A full rebuild discards the current design, so it always asks first -- reusing the
-        # same pending-confirmation mechanism as drafted copy below.
-        if op["operation"] == "rebuild_site":
-            await set_pending_edit(redis, business.id, op)
-            session.add(_log(business.id, telegram_user_id, raw_message, op=op, applied=False))
-            await session.commit()
-            await push_edit_turn(redis, business.id, raw_message, {"bot_asked": "confirm rebuild"})
-            await message.answer(
-                f"Just to check — that will rebuild <b>{business.name}</b> from scratch with a "
-                "brand-new design, replacing all four pages and the current look. Your saved "
-                'details stay.\n\nReply "yes" to go ahead, or tell me what to change instead.'
-            )
-            return
-
-        # Model-composed tagline/about text is gated behind a lightweight confirmation before
-        # it ever touches the DB -- everything else (the owner's own literal words, and
-        # update_extra_instructions) applies immediately as before.
-        drafted_field = None
-        if op["operation"] == "update_business_info" and op.get("drafted"):
-            if "about" in op:
-                drafted_field = "about"
-            elif "tagline" in op:
-                drafted_field = "tagline"
-        if drafted_field is not None:
-            drafted_text = op[drafted_field]
-            await set_pending_edit(redis, business.id, op)
-            session.add(_log(business.id, telegram_user_id, raw_message, op=op, applied=False))
-            await session.commit()
-            await push_edit_turn(
-                redis, business.id, raw_message,
-                {"drafted_but_unpublished": True, "field": drafted_field, "text": drafted_text},
-            )
-            await message.answer(
-                f"Here's what I drafted for your {drafted_field}:\n\n{drafted_text}\n\n"
-                'Reply "yes" to publish it, or tell me what to change.'
             )
             return
 

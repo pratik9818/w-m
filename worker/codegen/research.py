@@ -22,18 +22,9 @@ actually need one.
 """
 import logging
 
-from bot_api.services.openrouter_client import call_plain_completion
+from bot_api.services.llm_client import call_plain_completion
 
 logger = logging.getLogger(__name__)
-
-# Measured on the nano model: asked the same question twice about the same plumber it
-# answered NONE once and "Raj Plumbing" the next time, and it called a crypto edit NONE
-# outright. Judgement, not speed, is what these two calls are for, and the larger model is
-# free as well -- the only cost of using it here is a few seconds on two short calls.
-RESEARCH_MODELS = (
-    "nvidia/nemotron-3-super-120b-a12b:free",
-    "nvidia/nemotron-3-nano-30b-a3b:free",
-)
 
 # The decide step must answer in one of exactly two shapes. Keying on a prefix rather than
 # "the last line that wasn't NONE" is what stops a model's stray closing remark from
@@ -107,7 +98,7 @@ async def _decide_query(task: str) -> tuple[str | None, dict | None]:
     slightly vaguer page, an imagined one costs money on every build that never needed it.
     """
     reply, usage = await call_plain_completion(
-        _DECIDE_PROMPT.format(task=task), models=RESEARCH_MODELS, reduced_reasoning=True
+        _DECIDE_PROMPT.format(task=task), reduced_reasoning=True
     )
     for line in reply.strip().splitlines():
         stripped = line.strip().strip("*`\"'")
@@ -122,7 +113,7 @@ async def _decide_query(task: str) -> tuple[str | None, dict | None]:
 
 async def _look_up(query: str) -> tuple[str, dict | None]:
     reply, usage = await call_plain_completion(
-        _LOOKUP_PROMPT.format(query=query), models=RESEARCH_MODELS, online=True
+        _LOOKUP_PROMPT.format(query=query), online=True
     )
     if _is_none(reply):
         return "", usage

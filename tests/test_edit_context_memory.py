@@ -20,6 +20,8 @@ import inspect
 import re
 import textwrap
 
+import pytest
+
 from bot_api.bot.handlers import edit as edit_handler
 from bot_api.services.session import (
     _EDIT_CONTEXT_MAX_TURNS,
@@ -34,8 +36,15 @@ from bot_api.services.session import (
 _NOT_PART_OF_AN_EDIT = re.compile(
     r"Not sure that's something I can help edit|Not sure what you'd like to do|"
     r"already being updated|daily limit|couldn't process that just now|"
-    r"has been deleted|Rolling <b>|thinking about that"
+    r"has been deleted|Rolling <b>|thinking about that|isn't there any more"
 )
+
+# Both halves of the handler: the one that reads a message and asks, and the one that acts
+# on a yes. They are checked together because the split between them is an implementation
+# detail -- an owner sees one conversation. Naming them individually is deliberate: when
+# the acting half was first lifted out of `catch_all_edit`, a guard that knew only about
+# `catch_all_edit` went on passing while covering half of what it used to.
+_HANDLER_HALVES = ("catch_all_edit", "_apply_operation", "_add_a_found_photo")
 
 
 def _calls(node, name):
@@ -61,7 +70,8 @@ def _spoken_text(node):
     )
 
 
-def test_every_reply_path_records_a_turn():
+@pytest.mark.parametrize("handler_name", _HANDLER_HALVES)
+def test_every_reply_path_records_a_turn(handler_name):
     """A branch that replies to the owner and then returns must record a turn first.
 
     Walked over the syntax tree rather than by driving the handler, because the defect is
@@ -70,7 +80,8 @@ def test_every_reply_path_records_a_turn():
     tree is what makes it exact -- a `push_edit_turn` only counts when it is on the same
     branch as the reply, not merely nearby in the file.
     """
-    tree = ast.parse(textwrap.dedent(inspect.getsource(edit_handler.catch_all_edit)))
+    handler = getattr(edit_handler, handler_name)
+    tree = ast.parse(textwrap.dedent(inspect.getsource(handler)))
     problems: list[str] = []
 
     # `if`/`try` open alternative paths: what happens inside one branch says nothing about

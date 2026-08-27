@@ -12,6 +12,7 @@ and leaves the model to write only what actually needs judgement: the page's own
 import html
 
 from worker.codegen.photos import STOCK_PHOTO_CREDIT_HTML
+from worker.codegen.seo import head_tags
 
 NAV = (
     ("index.html", "Home"),
@@ -133,13 +134,18 @@ def render_page(
     """
     fonts = f"\n  {font_link}" if font_link else ""
     extra = f"\n  {head_extra}" if head_extra else ""
+    # Written by code, never asked of the model. A plausible-but-invalid LocalBusiness
+    # block is silently ignored by search engines, which looks exactly like the job having
+    # been done -- so it is either correct here or absent.
+    seo = head_tags(spec, filename, title, description, spec.get("site_url"))
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{_esc(title)}</title>
-  <meta name="description" content="{_esc(description)}">{fonts}{extra}
+  <meta name="description" content="{_esc(description)}">
+  {seo}{fonts}{extra}
   <link rel="stylesheet" href="style.css">
 </head>
 <body>

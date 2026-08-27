@@ -31,6 +31,9 @@ class FakeBusiness:
     extra_instructions = None
     services = []
     media = []
+    social_links = {}
+    # A site that has been built once knows its own address; the SEO tags need it.
+    deployment_url = "https://page-turner-books.pages.dev"
 
 
 @pytest.fixture
@@ -115,7 +118,7 @@ async def test_it_only_ever_chooses_between_understanding_outcomes(tool_call):
 @pytest.mark.asyncio
 async def test_a_broken_understanding_call_does_not_block_the_edit(monkeypatch):
     async def boom(prompt, tools):
-        raise edit_intent.OpenRouterCallFailed("provider down")
+        raise edit_intent.LLMCallFailed("provider down")
 
     monkeypatch.setattr(edit_intent, "call_forced_tool", boom)
     with pytest.raises(edit_intent.EditNotUnderstood):

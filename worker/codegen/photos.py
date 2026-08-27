@@ -24,13 +24,14 @@ whose <img> does not actually load, so a dead URL cannot reach an owner silently
 import asyncio
 import json
 import logging
+import re
 
 import httpx
 
 from bot_api.config import get_settings
-from bot_api.services.openrouter_client import (
+from bot_api.services.llm_client import (
     DailyLimitReached,
-    OpenRouterCallFailed,
+    LLMCallFailed,
     call_forced_tool,
 )
 
@@ -145,6 +146,33 @@ not already cover, and fewer shots -- or none at all if their photographs are en
 Now call choose_photographs exactly once."""
 
 
+def _normalise_shot(raw) -> dict | None:
+    """One entry of the model's `shots` list, or None when there is nothing usable in it.
+
+    The tool schema asks for objects with `purpose`, `query` and `alt`. That is a request,
+    not a guarantee -- the schema is not declared `strict`, and on a real build the model
+    answered with a plain list of search phrases instead. The parser assumed the schema had
+    been honoured, so the build died on `'str' object has no attribute 'get'` before a
+    single page was written, over an optional feature.
+
+    A bare string is read as the search query. It is the one field that cannot be guessed
+    from the others, so a string on its own is still a photograph worth finding.
+    """
+    if isinstance(raw, str):
+        query = raw.strip()
+        return {"purpose": "section", "query": query, "alt": query} if query else None
+    if not isinstance(raw, dict):
+        return None
+    query = str(raw.get("query") or "").strip()
+    if not query:
+        return None
+    return {
+        "purpose": str(raw.get("purpose") or "").strip() or "section",
+        "query": query,
+        "alt": str(raw.get("alt") or "").strip() or query,
+    }
+
+
 async def _plan_shots(spec: dict) -> tuple[list[dict], dict | None]:
     """What to photograph, in the business's own terms. Never raises: a build without
     photographs is a plainer site, while a build that dies over one is a failure the
@@ -154,20 +182,27 @@ async def _plan_shots(spec: dict) -> tuple[list[dict], dict | None]:
     )
     try:
         op, usage = await call_forced_tool(prompt, [PLAN_TOOL])
-    except (OpenRouterCallFailed, DailyLimitReached) as exc:
+    except (LLMCallFailed, DailyLimitReached) as exc:
         logger.warning("photos.plan_failed", extra={"event": "photos.plan_failed", "error": str(exc)[:200]})
         return [], None
 
-    shots = []
-    for raw in (op.get("shots") or [])[:MAX_SHOTS]:
-        query = str(raw.get("query") or "").strip()
-        if not query:
-            continue
-        shots.append({
-            "purpose": str(raw.get("purpose") or "").strip() or "section",
-            "query": query,
-            "alt": str(raw.get("alt") or "").strip() or query,
-        })
+    raw_shots = op.get("shots")
+    if not isinstance(raw_shots, list):
+        # Not the shape the schema asked for and nothing to salvage from it.
+        logger.warning(
+            "photos.plan_malformed",
+            extra={"event": "photos.plan_malformed", "type": type(raw_shots).__name__},
+        )
+        return [], usage
+
+    shots = [s for s in (_normalise_shot(r) for r in raw_shots[:MAX_SHOTS]) if s]
+    # The prompt asks for the shots "in the order they would appear", first one the hero.
+    # When the model gives no shot that purpose -- which is every degraded response, since
+    # a bare string carries no purpose at all -- honouring that ordering is what keeps the
+    # home page's one big image. Without it the site is built entirely from section
+    # photographs and the top of the front page is bare.
+    if shots and not any(s["purpose"].lower() == HERO_PURPOSE for s in shots):
+        shots[0]["purpose"] = HERO_PURPOSE
     return shots, usage
 
 
@@ -226,35 +261,101 @@ async def find_photos(spec: dict) -> tuple[list[dict], dict | None]:
 
     Returns ([], None) when no key is configured, when the planner declines, or when every
     search comes back empty -- all of which mean "build the site without photographs".
-    """
-    api_key = get_settings().pexels_api_key
-    if not api_key:
-        return [], None
 
-    shots, usage = await _plan_shots(spec)
-    if not shots:
+    Never raises. Photographs are an enhancement, and the whole module is written on the
+    promise that a build which cannot find any still produces a site. That promise used to
+    live only in the docstring: the model call was guarded but the code reading its answer
+    was not, so one unexpected shape in the response took down a build that had nothing
+    else wrong with it. The guard belongs around everything the response touches, which is
+    all of this. Same reasoning as research.gather_facts -- an optional call must not be
+    able to fail a build.
+    """
+    usage = None
+    try:
+        api_key = get_settings().pexels_api_key
+        if not api_key:
+            return [], None
+
+        shots, usage = await _plan_shots(spec)
+        if not shots:
+            return [], usage
+
+        async with httpx.AsyncClient(
+            timeout=SEARCH_TIMEOUT_SECONDS, headers={"Authorization": api_key}
+        ) as client:
+            found = await asyncio.gather(*(_search_one(client, shot) for shot in shots))
+
+        photos: list[dict] = []
+        seen: set = set()
+        for photo in found:
+            # The same stock photograph answering two different searches would otherwise
+            # appear twice on one site.
+            if photo and photo["photo_id"] not in seen:
+                seen.add(photo["photo_id"])
+                photos.append(photo)
+
+        log_extra = {
+            "event": "photos.found", "wanted": len(shots), "found": len(photos),
+            "queries": [s["query"] for s in shots],
+        }
+        logger.info("photos.found", extra=log_extra)
+        return photos, usage
+    except Exception:
+        # `usage` is returned even here: when the planning call succeeded and something
+        # after it failed, those tokens were still spent and still have to be billed.
+        logger.warning("photos raised, continuing without photographs", exc_info=True)
         return [], usage
 
-    async with httpx.AsyncClient(
-        timeout=SEARCH_TIMEOUT_SECONDS, headers={"Authorization": api_key}
-    ) as client:
-        found = await asyncio.gather(*(_search_one(client, shot) for shot in shots))
 
-    photos: list[dict] = []
-    seen: set = set()
-    for photo in found:
-        # The same stock photograph answering two different searches would otherwise appear
-        # twice on one site.
-        if photo and photo["photo_id"] not in seen:
-            seen.add(photo["photo_id"])
-            photos.append(photo)
+async def find_one_photo(spec: dict, hint: str = "") -> dict | None:
+    """One stock photograph for a business, without a model call.
 
-    log_extra = {
-        "event": "photos.found", "wanted": len(shots), "found": len(photos),
-        "queries": [s["query"] for s in shots],
-    }
-    logger.info("photos.found", extra=log_extra)
-    return photos, usage
+    `find_photos` above plans a whole shoot and pays a model to choose the search words.
+    That is right when a site is being written from nothing and wrong for "add a picture to
+    my home page", where the answer is one photograph and the business already says what it
+    should be of. The query is built from the owner's own words and their category, which
+    is what a person would type into a photo library.
+
+    Returns None whenever a photograph cannot be found, including with no key configured.
+    Never raises: the caller is answering a chat message, not running a build.
+    """
+    try:
+        api_key = get_settings().pexels_api_key
+        if not api_key:
+            return None
+
+        # Their words first -- "a picture of bread" is a better search than "Bakery" -- with
+        # the category behind it so a hint like "add a photo" still finds something on topic.
+        words = " ".join(part for part in (hint.strip(), str(spec.get("category") or "").strip())
+                         if part)
+        query = " ".join(_SEARCH_STOPWORDS_RE.sub(" ", words).split())[:80]
+        if not query:
+            return None
+
+        async with httpx.AsyncClient(
+            timeout=SEARCH_TIMEOUT_SECONDS, headers={"Authorization": api_key}
+        ) as client:
+            photo = await _search_one(client, {"purpose": HERO_PURPOSE, "query": query, "alt": query})
+        logger.info(
+            "photos.one_found",
+            extra={"event": "photos.one_found", "query": query, "found": bool(photo)},
+        )
+        return photo
+    except Exception:
+        logger.warning("find_one_photo raised, continuing without a photograph", exc_info=True)
+        return None
+
+
+# Words that describe the request rather than the picture. Left in, they are what the photo
+# library actually searches for, and "can you add a nice image to my page" returns pictures
+# of pages.
+_SEARCH_STOPWORDS_RE = re.compile(
+    r"\b(?:can|could|you|please|add|put|insert|place|show|include|want|need|like|get|find|"
+    r"me|my|a|an|the|some|any|to|on|in|at|of|for|with|and|is|it|this|that|there|"
+    r"image|images|picture|pictures|photo|photos|photograph|photographs|pic|pics|"
+    r"page|pages|site|website|top|section|nice|good|better|new)\b",
+    re.IGNORECASE,
+)
 
 
 def allocate_photos(

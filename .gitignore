@@ -34,3 +34,6 @@ generated_output/
 Thumbs.db
 .idea/
 .vscode/
+
+# Data pulled out of the database before a destructive change
+backups/

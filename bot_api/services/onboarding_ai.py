@@ -7,9 +7,9 @@ that answer then got rendered on their live site as opening hours.
 Same content rules as everywhere else: descriptive copy may be composed, but a phone
 number, price, address or opening time is only ever recorded if the owner actually said it.
 """
-from bot_api.services.openrouter_client import (
+from bot_api.services.llm_client import (
     DailyLimitReached,
-    OpenRouterCallFailed,
+    LLMCallFailed,
     call_forced_tool,
 )
 
@@ -110,9 +110,9 @@ async def parse_business_brief(
     try:
         return await call_forced_tool(prompt, TOOLS)
     except DailyLimitReached:
-        # Subclasses OpenRouterCallFailed, so without this it would be wrapped into a
+        # Subclasses LLMCallFailed, so without this it would be wrapped into a
         # generic parse failure and reported as "try again in a moment" -- advice that
         # cannot work, because the cap resets on the day, not in a moment.
         raise
-    except OpenRouterCallFailed as exc:
+    except LLMCallFailed as exc:
         raise BriefParseFailed(f"Could not read that description: {exc}") from exc
