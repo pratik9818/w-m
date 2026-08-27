@@ -3,10 +3,35 @@ import logging
 from aiogram import Bot
 from aiogram.types import BufferedInputFile
 
+from bot_api.services.redis_client import get_redis
+from bot_api.services.session import push_edit_turn
 from db.models import Business
 from worker.codegen.quota import AVG_EDIT_COST
 
 logger = logging.getLogger(__name__)
+
+# What the owner sees is one conversation, but it has two mouths: the bot process answers
+# their messages, and the worker sends the results minutes later. Only the first half was
+# ever written to the conversation buffer, so everything the worker said was invisible to
+# the next message -- the bot could not remember its own results, its own failures, or its
+# own suggestions. That is the whole of the "it forgets what it just told me" complaint.
+_MEMORY_MAX_CHARS = 400
+
+
+async def _remember(business: Business, text: str) -> None:
+    """Record something the worker told the owner, so the next message is read against it.
+
+    Never raises. A message that reached Telegram but could not be written to Redis is a
+    worse memory, not a failed build -- and this runs at the very end of a pipeline that
+    has already succeeded.
+    """
+    try:
+        await push_edit_turn(
+            get_redis(), business.id, "(waiting for their site)",
+            {"bot_said": text[:_MEMORY_MAX_CHARS]},
+        )
+    except Exception:
+        logger.warning("could not record what was said to the owner", exc_info=True)
 
 # Telegram rejects a caption over 1024 characters outright.
 CAPTION_MAX_LEN = 1024
@@ -114,11 +139,13 @@ async def notify_owner_success(
                 BufferedInputFile(screenshot, filename="your-site.png"),
                 caption=text,
             )
+            await _remember(business, text)
             return
         except Exception:
             logger.warning("could not send the preview image, sending text instead", exc_info=True)
 
     await bot.send_message(business.owner_telegram_id, text)
+    await _remember(business, text)
 
 
 async def notify_owner_failure(
@@ -131,6 +158,9 @@ async def notify_owner_failure(
         # lets an owner judge whether to retry or change something.
         text += f"\n\nWhat went wrong: {detail}"
     await bot.send_message(business.owner_telegram_id, text)
+    # Failures matter here more than successes. "You've used up your allowance" is the
+    # message an owner replies to, and a reply read without it is read against nothing.
+    await _remember(business, text)
 
 
 async def notify_owner_progress(bot: Bot, business: Business, stage: str) -> None:

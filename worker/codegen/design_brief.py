@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 import re
 
-from bot_api.services.openrouter_client import OpenRouterCallFailed, call_forced_tool
+from bot_api.services.llm_client import LLMCallFailed, call_forced_tool
 
 logger = logging.getLogger(__name__)
 
@@ -320,7 +320,7 @@ async def make_design_brief(spec: dict, spec_json: str) -> tuple[dict, dict | No
 
     try:
         raw, usage = await call_forced_tool(prompt, [DESIGN_BRIEF_TOOL])
-    except (OpenRouterCallFailed, Exception) as exc:  # noqa: B014 - deliberate catch-all
+    except (LLMCallFailed, Exception) as exc:  # noqa: B014 - deliberate catch-all
         logger.warning("design brief failed, using the %s fallback: %s", theme, exc)
         return fallback_brief(theme), None
 

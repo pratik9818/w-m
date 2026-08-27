@@ -36,7 +36,7 @@ class WorkerSettings:
     max_tries = 1
     # Generous: writing a full four-page site on the large free model is the slow stage
     # and can take several minutes on its own, before the sandbox run (~30-60s) and the
-    # Cloudflare deploy (~5-10s). The client-side request timeout in openrouter_client
+    # Cloudflare deploy (~5-10s). The client-side request timeout in llm_client
     # is the real bound on a hung call; this only needs to be comfortably above it.
     job_timeout = 1800
     # Short on purpose: enqueue_job's _job_id dedup (used to prevent a double-tapped

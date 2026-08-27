@@ -11,6 +11,10 @@ class OnboardingStates(StatesGroup):
     """
 
     waiting_brief = State()
+    # What the model read out of the brief is put back to the owner before a site is
+    # built from it. A build is the most expensive thing this bot does and it publishes
+    # the result, so a misread brief is worth catching while it is still a message.
+    waiting_confirm = State()
 
 
 CATEGORIES = [

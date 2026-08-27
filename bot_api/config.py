@@ -16,9 +16,9 @@ class Settings(BaseSettings):
     supabase_url: str = ""
     supabase_service_key: str = ""
 
+    # The only model key the bot uses. Everything -- writing sites, reading edits,
+    # onboarding, choosing photographs -- goes through Claude via bot_api/services/llm_client.py.
     anthropic_api_key: str = ""
-    gemini_api_key: str = ""
-    openrouter_api_key: str = ""
     # Stock photography for generated sites. Absent, builds simply carry no photographs.
     pexels_api_key: str = ""
     daytona_api_key: str = ""

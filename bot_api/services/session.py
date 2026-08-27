@@ -12,8 +12,10 @@ _EDIT_CONTEXT_KEY = "nl_edit_ctx:{business_id}"
 # window expired mid-conversation and the reply landed with no memory of what it answered.
 _EDIT_CONTEXT_TTL_SECONDS = 3600  # 1 hour sliding window
 # Three turns is one question, one answer, and one more message -- an owner making a few
-# small changes in a row had already pushed the start of the exchange out of view.
-_EDIT_CONTEXT_MAX_TURNS = 8
+# small changes in a row had already pushed the start of the exchange out of view. Raised
+# again when the worker's own messages started being recorded here: a single build now
+# contributes a turn of its own, so eight turns was no longer eight exchanges.
+_EDIT_CONTEXT_MAX_TURNS = 12
 
 _PENDING_EDIT_KEY = "pending_edit:{business_id}"
 _PENDING_EDIT_TTL_SECONDS = 600
@@ -42,6 +44,15 @@ def render_edit_context(context: list[dict] | None) -> str:
     for i, turn in enumerate(context, start=1):
         lines.append(f'{i}. Owner said: "{turn["raw_message"]}"')
         outcome = turn["outcome"]
+        # Additive rather than part of the chain below: a photograph almost always arrives
+        # *with* a question about where it should go, and the next message ("the second
+        # one", "put it at the top") needs both halves to make sense.
+        if "photo_url" in outcome:
+            lines.append(
+                f'   They sent a photograph. It is already uploaded and its URL is '
+                f'{outcome["photo_url"]} -- use that exact URL if this is the picture they '
+                f'mean. Do not ask them to send it again.'
+            )
         if "bot_asked" in outcome:
             lines.append(f'   You asked: "{outcome["bot_asked"]}"')
         elif "applied" in outcome:
@@ -50,6 +61,13 @@ def render_edit_context(context: list[dict] | None) -> str:
             lines.append(f'   That was rejected: {outcome["rejected"]}')
         elif "drafted_but_unpublished" in outcome:
             lines.append(f'   You drafted this {outcome["field"]} text, not yet published: "{outcome["text"]}"')
+        elif "bot_said" in outcome:
+            # Not a question, but still something the next message can be about. The build
+            # results and the quota warning are sent from the worker minutes later, and
+            # until they were recorded here the bot could not remember a single thing it
+            # had said from that side: an owner whose allowance ran out was told so, said
+            # "ok use the one you suggested", and was asked to start again from nothing.
+            lines.append(f'   You told them: "{outcome["bot_said"]}"')
 
     # Repeated at the end, because it is the fact most likely to be needed and the one that
     # was reliably getting lost: your own unanswered question reads as just another history

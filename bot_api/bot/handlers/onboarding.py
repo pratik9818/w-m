@@ -17,11 +17,11 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
-from bot_api.bot.filters import has_text
+from bot_api.bot.filters import has_text, is_affirmation
 from bot_api.bot.states.onboarding import OnboardingStates
 from bot_api.services.business_service import OnboardingSpec, create_business_from_spec
 from bot_api.services.onboarding_ai import BriefParseFailed, parse_business_brief
-from bot_api.services.openrouter_client import DailyLimitReached
+from bot_api.services.llm_client import DailyLimitReached
 from bot_api.services.queue import enqueue_generation
 from bot_api.services.redis_client import get_redis
 from bot_api.services.session import set_active_business
@@ -124,6 +124,63 @@ async def on_brief(message: Message, state: FSMContext) -> None:
         # rather than replacing it.
         await state.update_data(brief_history=history + [brief])
         await message.answer(op.get("question") or "Could you tell me a bit more about your business?")
+        return
+
+    # Read back before anything is built. The model has just inferred a name, a category,
+    # a layout and the marketing copy from one free-text message, and the owner has seen
+    # none of it. Building first means the first time they find out it was misread is on
+    # their published site.
+    # The brief joins the history here, not only on the need-more-info path: if the owner
+    # answers the summary with a correction rather than a yes, that correction is read
+    # alongside what they already said instead of replacing it.
+    await state.update_data(parsed=op, brief_history=history + [brief])
+    await state.set_state(OnboardingStates.waiting_confirm)
+    await message.answer(_brief_summary(op) + "\n\nReply <b>yes</b> to build it, or tell "
+                         "me what to change and I'll take another look.")
+
+
+def _brief_summary(op: dict) -> str:
+    """What was understood from the brief, itemised so a wrong line is easy to spot."""
+    lines = [f"Here's what I've got for <b>{_clip(op.get('name'), 'name') or 'your site'}</b>:", ""]
+    layout = "one-page landing site" if str(op.get("layout", "")).lower().startswith("land") \
+        else "four-page site"
+    lines.append(f"• <b>Type:</b> {str(op.get('category') or 'Other').strip()}, as a {layout}")
+    for label, key, limit in (("Tagline", "tagline", "tagline"), ("About", "about", "about")):
+        value = _clip(op.get(key), limit)
+        if value:
+            lines.append(f"• <b>{label}:</b> {value}")
+    services = [
+        str(item.get("name")).strip()
+        for item in (op.get("services") or [])[:MAX_SERVICES]
+        if isinstance(item, dict) and item.get("name")
+    ]
+    if services:
+        lines.append(f"• <b>Services:</b> {', '.join(services)}")
+    contact = [
+        str(op.get(key)).strip() for key in ("phone", "email", "address") if op.get(key)
+    ]
+    if contact:
+        lines.append(f"• <b>Contact:</b> {' · '.join(contact)}")
+    return "\n".join(lines)
+
+
+@router.message(OnboardingStates.waiting_confirm, Command("cancel"))
+async def on_confirm_cancel(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer("Cancelled — nothing was built. Send /newsite whenever you're ready.")
+
+
+@router.message(OnboardingStates.waiting_confirm, has_text)
+async def on_confirm(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    op = data.get("parsed") or {}
+
+    if not is_affirmation(message.text):
+        # Not a yes, so it is a correction. The original brief and this message are read
+        # together on the next pass -- treating it as a fresh brief would throw away
+        # everything they had already said.
+        await state.set_state(OnboardingStates.waiting_brief)
+        await on_brief(message, state)
         return
 
     spec = _spec_from_operation(data["business_id"], op)

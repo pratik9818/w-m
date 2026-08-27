@@ -59,7 +59,9 @@ async def rollback_site(ctx: dict, business_id: str, version_id: str) -> None:
         await session.commit()
 
         try:
-            project_name, live_url = await deploy_to_cloudflare_pages(business, target.files)
+            project_name, live_url, _files = await deploy_to_cloudflare_pages(
+                business, target.files
+            )
         except Exception as exc:
             logger.exception("rollback_site: deploy failed for %s", business_id)
             restored.status = "failed"

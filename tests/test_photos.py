@@ -119,9 +119,9 @@ async def test_a_rejected_key_does_not_fail_the_build(pexels, planner):
 
 @pytest.mark.asyncio
 async def test_a_failed_planning_call_does_not_fail_the_build(pexels, planner):
-    from bot_api.services.openrouter_client import OpenRouterCallFailed
+    from bot_api.services.llm_client import LLMCallFailed
 
-    planner["raises"] = OpenRouterCallFailed("model unavailable")
+    planner["raises"] = LLMCallFailed("model unavailable")
     found, _ = await photos.find_photos(SPEC)
     assert found == []
 
@@ -132,6 +132,84 @@ async def test_a_business_with_nothing_to_photograph_gets_nothing(pexels, planne
     found, _ = await photos.find_photos(SPEC)
     assert found == []
     assert pexels["queries"] == []
+
+
+# ------------------------------------------------- when the answer ignores the schema
+#
+# All of these are real shapes a model can return for a tool whose schema is not declared
+# `strict`. The first one took down a live build: the parser called .get() on what it
+# assumed was an object, and an owner watching their site being made was told something
+# went wrong -- over photographs, which the whole module treats as optional.
+
+@pytest.mark.asyncio
+async def test_shots_returned_as_bare_strings_still_find_photographs(pexels, planner):
+    planner["plan"] = {"shots": ["sourdough bread bakery", "hands kneading dough"]}
+
+    found, _ = await photos.find_photos(SPEC)
+
+    assert pexels["queries"] == ["sourdough bread bakery", "hands kneading dough"]
+    assert found, "a list of plain search phrases is still enough to search with"
+
+
+@pytest.mark.asyncio
+async def test_a_string_only_plan_still_produces_a_hero(pexels, planner):
+    """A bare string carries no purpose, so nothing is labelled hero. Left alone, the site
+    is built entirely from section photographs and the top of the home page is bare."""
+    planner["plan"] = {"shots": ["sourdough bread bakery"]}
+
+    found, _ = await photos.find_photos(SPEC)
+
+    assert [p["purpose"] for p in found] == ["hero"]
+
+
+@pytest.mark.asyncio
+async def test_junk_entries_are_dropped_without_losing_the_good_ones(pexels, planner):
+    planner["plan"] = {"shots": [
+        None,
+        42,
+        {"purpose": "hero", "query": "sourdough bread bakery", "alt": "Loaves"},
+        {"purpose": "about", "alt": "no query at all"},
+        "",
+    ]}
+
+    found, _ = await photos.find_photos(SPEC)
+
+    assert pexels["queries"] == ["sourdough bread bakery"]
+    assert len(found) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shots", ["sourdough bakery", {"query": "x"}, 7, None])
+async def test_a_shots_field_that_is_not_a_list_does_not_fail_the_build(
+    pexels, planner, shots
+):
+    """A string here is the dangerous one: it slices and iterates like a list, so without
+    a type check the build would search for 's', 'o', 'u', 'r'..."""
+    planner["plan"] = {"shots": shots}
+
+    found, usage = await photos.find_photos(SPEC)
+
+    assert found == []
+    assert pexels["queries"] == []
+    assert usage is not None, "the planning call was still made and still has to be billed"
+
+
+@pytest.mark.asyncio
+async def test_an_unexpected_failure_costs_photographs_not_the_build(pexels, planner):
+    """The guarantee this module is written on, tested at its edge: whatever goes wrong
+    after the planning call, the caller gets an empty list rather than an exception."""
+    def explode(*a, **k):
+        raise RuntimeError("pexels client blew up")
+
+    pexels_module_client = photos.httpx.AsyncClient
+    photos.httpx.AsyncClient = explode
+    try:
+        found, usage = await photos.find_photos(SPEC)
+    finally:
+        photos.httpx.AsyncClient = pexels_module_client
+
+    assert found == []
+    assert usage["input_tokens"] == 10, "tokens already spent are still reported"
 
 
 # ------------------------------------------------------------------ into the prompt

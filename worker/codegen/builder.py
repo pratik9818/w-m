@@ -11,9 +11,9 @@ from string import Template
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot_api.services.openrouter_client import (
+from bot_api.services.llm_client import (
     DailyLimitReached,
-    OpenRouterCallFailed,
+    LLMCallFailed,
     call_plain_completion,
 )
 from bot_api.logging_config import log_event
@@ -29,6 +29,7 @@ from worker.codegen.design_brief import (
 from worker.codegen.quota import check_quota, record_usage
 from worker.codegen.photos import allocate_photos, find_photos, photos_section
 from worker.codegen.research import facts_for_build, facts_for_edit
+from worker.codegen.seo import crawl_files
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 
@@ -37,10 +38,10 @@ PROMPTS_DIR = Path(__file__).parent / "prompts"
 # descriptions that used to live here survive as THEME_MOODS -- a starting point for
 # that call rather than the whole design.
 
-# Plain-text delimiters, not forced tool-calling: verified live that OpenRouter's free
-# tier caps individual tool-call argument strings at ~1024 characters regardless of
-# model or max_tokens -- far too short for a real HTML document. Plain completions
-# don't hit that cap (see openrouter_client.py's module docstring).
+# Plain-text delimiters rather than forced tool-calling. The original reason was a
+# provider cap on tool-call argument strings, which no longer applies; the reason it stays
+# is that a multi-file HTML response is far cleaner to stream and to repair as text than as
+# JSON, where every newline and quote in the document has to survive escaping.
 FILE_MARKER_RE = re.compile(r"^===FILE:\s*(?P<name>[\w.\-]+)\s*===$", re.MULTILINE)
 END_MARKER_RE = re.compile(r"^===END===\s*$", re.MULTILINE)
 CODE_FENCE_RE = re.compile(r"^```[a-zA-Z]*\n|\n?```$")
@@ -296,6 +297,11 @@ def spec_from_business(business: Business) -> dict:
         "photo_urls": photo_urls,
         "extra_instructions": _clean(business.extra_instructions),
         "layout": business.layout,
+        "social_links": business.social_links or {},
+        # The site's own address, for the canonical tag, the share cards and the sitemap.
+        # None until the very first deploy has told us what Cloudflare called it, which is
+        # why `seo.finalise_urls` exists -- it fills these in once the answer is known.
+        "site_url": business.deployment_url,
         # Passed in as data so the footer never reaches for `new Date()`. Scripts are
         # allowed on these sites now, but the footer year is still the wrong place for
         # one: the shell writes the footer, the model never sees it, and a value known at
@@ -1053,7 +1059,7 @@ async def build_site(
         results = await asyncio.gather(*jobs)
     except DailyLimitReached:
         raise  # resolves itself with time -- must not be reported as a generation fault
-    except OpenRouterCallFailed as exc:
+    except LLMCallFailed as exc:
         raise GenerationFailed(f"Site generation failed: {exc}") from exc
 
     files: dict[str, str] = {}
@@ -1088,6 +1094,11 @@ async def build_site(
     drift = _style_drift(files)
     if drift is not None:
         raise GenerationFailed(drift)
+
+    # Added after the required-file and drift checks, never before: these are for crawlers
+    # and must not be able to satisfy a check that is asking whether the site itself is
+    # complete.
+    files.update(crawl_files(files.keys(), spec.get("site_url")))
 
     if owner_telegram_id is not None:
         await record_usage(

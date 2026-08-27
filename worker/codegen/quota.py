@@ -5,7 +5,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import TokenUsage
 
-FREE_TIER_TOKEN_LIMIT = 2_000_000
+# The per-owner allowance, in tokens. Raised from 2M when the first owner reached it: the
+# figure was set while the bot ran on free models, where it stood in for a provider limit
+# nobody controlled. It is now a self-imposed cap on an account we pay for directly, so it
+# protects against runaway spend rather than against being cut off, and 2M was low enough
+# to stop a working conversation mid-sentence.
+FREE_TIER_TOKEN_LIMIT = 4_000_000
 
 # Measured from real usage rows, and counting the whole interaction rather than just the
 # build: reading the owner's message costs 8-12k on its own, which the old figures left
