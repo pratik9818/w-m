@@ -8,23 +8,42 @@ now the alternative was a page that simply said nothing.
 
 This module gives them the third option: go and look it up.
 
-Two calls, deliberately split, because OpenRouter's `:online` suffix searches the web on
-EVERY request carrying it and bills per result. Searching unconditionally would put a
-per-build charge on the plumbers and cafes that never needed a lookup.
+Two calls, deliberately split, so an ordinary plumber or cafe never pays for a search it
+had no use for:
 
-  1. Decide (free, no search). "Would building this need facts you don't reliably know?
-     If so, what is the one search worth running?" A model answering NONE costs nothing
-     beyond the free-tier call.
-  2. Look up (billed, searched). Only runs when step 1 produced a query.
+  1. Decide (cheap, no search). "Would building this need facts you don't reliably know?
+     If so, what is the one search worth running?" Measured at ~630 tokens.
+  2. Look up (expensive, searched). Only runs when step 1 produced a query.
 
-So the common case is one extra free call, and search is paid for only by the builds that
-actually need one.
+Step 2 is far more expensive than it looks. The search runs on Anthropic's servers and the
+results are fed back into the request as *input*, so one lookup was measured at **25,117
+input tokens** for 330 tokens of output -- 32% of an entire 78,656-token build. (An earlier
+version of this comment described OpenRouter's `:online` suffix billing per result; the bot
+moved to Anthropic's server-side web search and the cost model changed completely, which is
+why a "cheap" lookup went unnoticed as it became the single largest call in the build.)
+
+The one search that can never succeed is a search for the business itself: a brand-new
+small business has no web presence, so the results come back empty. That happened live --
+query "Xtravu digital signage SaaS platform" returned `facts_chars: 0` after spending those
+25k tokens. Both the prompt below and `_decide_query`'s deterministic guard refuse it.
 """
 import logging
+import re
 
 from bot_api.services.llm_client import call_plain_completion
 
 logger = logging.getLogger(__name__)
+
+_WORD_RE = re.compile(r"[a-z0-9]+")
+# Words a business name can be made of that say nothing distinctive about it. Without this,
+# a business called "Bristol Cleaning Services" would block any query containing
+# "services" -- including the useful ones.
+_GENERIC_NAME_WORDS = frozenset({
+    "the", "a", "an", "and", "of", "for", "at", "by", "my", "our",
+    "co", "ltd", "limited", "inc", "llc", "plc", "gmbh", "group", "holdings",
+    "company", "business", "services", "service", "solutions", "systems",
+    "studio", "studios", "shop", "store", "agency", "works", "collective",
+})
 
 # The decide step must answer in one of exactly two shapes. Keying on a prefix rather than
 # "the last line that wasn't NONE" is what stops a model's stray closing remark from
@@ -51,6 +70,12 @@ a specific place, anything that changes over time.
 Choose NONE when this is ordinary writing about an ordinary business, or a change to how
 the page looks. Most tasks are NONE.
 
+**Never search for the business itself.** However specialist its category sounds, this is a
+small business having its first website built -- there is nothing about it on the web to
+find, and the search comes back empty every time. Search only for things that exist
+independently of it: a market, a regulation, a named third-party product, a place. If the
+query you were about to write is essentially the business's own name, answer NONE.
+
 Examples:
 
 Task: Build a website for "Raj Plumbing". Category: Plumber.
@@ -59,11 +84,17 @@ NONE
 Task: Make the hero heading bigger and centre it.
 NONE
 
+Task: Build a website for "Xtravu". Category: digital signage SaaS platform.
+NONE
+
 Task: Build a website for "NovaToken". Category: Crypto project.
-SEARCH: NovaToken cryptocurrency project
+NONE
 
 Task: Add a section listing the other major cryptocurrencies alongside ours.
 SEARCH: largest cryptocurrencies by market capitalisation
+
+Task: Add a section on the deposit protection rules we have to follow as letting agents.
+SEARCH: UK tenancy deposit protection scheme rules for letting agents
 
 Now the real one:
 
@@ -91,11 +122,44 @@ def _is_none(reply: str) -> bool:
     return reply.strip().strip("\"'`.*").lower() == NO_SEARCH
 
 
-async def _decide_query(task: str) -> tuple[str | None, dict | None]:
+def _is_self_search(query: str, subject: str | None) -> bool:
+    """True when the query names the business it is supposed to be researching.
+
+    Backs up the prompt rule instead of trusting it -- the same reasoning this codebase
+    applies everywhere else: a rule that lives only in a prompt is a hope, and this one is
+    worth a third of a build.
+
+    Deliberately blunt: any distinctive word of the business's own name appearing in the
+    query is enough to refuse it. A search naming the business is a search for a company
+    that had no website until this moment, and it comes back empty. The genuinely useful
+    lookups -- a market, a regulation, a third-party product -- never name the business, so
+    they are unaffected. Erring this way is cheap by design: a missed search costs a
+    slightly vaguer page, while the search it prevents cost 25,117 tokens and returned
+    nothing.
+    """
+    if not subject or not query:
+        return False
+    distinctive = {
+        word for word in _WORD_RE.findall(subject.lower())
+        if word and word not in _GENERIC_NAME_WORDS
+    }
+    if not distinctive:
+        # A name made entirely of filler ("The Studio") tells us nothing, so let the
+        # model's own judgement stand rather than blocking on a coincidence.
+        return False
+    return bool(distinctive & set(_WORD_RE.findall(query.lower())))
+
+
+async def _decide_query(
+    task: str, subject: str | None = None
+) -> tuple[str | None, dict | None]:
     """The query to run, or None. Defaults to None on anything it cannot read cleanly.
 
     Only this side of the decision is safe to get wrong cheaply: a missed search costs a
     slightly vaguer page, an imagined one costs money on every build that never needed it.
+
+    `subject` is the business's own name, when there is one. A query naming it is refused
+    outright -- see `_is_self_search`.
     """
     reply, usage = await call_plain_completion(
         _DECIDE_PROMPT.format(task=task), reduced_reasoning=True
@@ -105,9 +169,15 @@ async def _decide_query(task: str) -> tuple[str | None, dict | None]:
         if not stripped.lower().startswith(SEARCH_PREFIX):
             continue
         query = stripped[len(SEARCH_PREFIX):].strip().strip("\"'`")
-        if query and not _is_none(query) and len(query) <= MAX_QUERY_CHARS:
-            return query, usage
-        return None, usage
+        if not query or _is_none(query) or len(query) > MAX_QUERY_CHARS:
+            return None, usage
+        if _is_self_search(query, subject):
+            logger.info(
+                "research.self_search_refused",
+                extra={"event": "research.self_search_refused", "query": query[:120]},
+            )
+            return None, usage
+        return query, usage
     return None, usage
 
 
@@ -158,15 +228,18 @@ def _format_block(query: str, facts: str) -> str:
     )
 
 
-async def gather_facts(task: str) -> tuple[str, dict | None]:
+async def gather_facts(task: str, subject: str | None = None) -> tuple[str, dict | None]:
     """Return (facts_block, usage). The block is "" whenever no lookup was needed.
 
     Never raises. Research is an enhancement: a build that cannot reach the search must
     still produce a site, exactly as it did before this existed. Same reasoning as the
     design brief's fallback -- an optional call must not be able to fail a build.
+
+    `subject` is the business's own name where the caller knows it, so a query that merely
+    names the business can be refused before the expensive call runs.
     """
     try:
-        query, decide_usage = await _decide_query(task)
+        query, decide_usage = await _decide_query(task, subject)
         if not query:
             logger.info("research.skipped", extra={"event": "research.skipped"})
             return "", _merge_usage(decide_usage)
@@ -195,7 +268,10 @@ async def facts_for_build(spec: dict) -> tuple[str, dict | None]:
             f"Services listed: {services}" if services else "",
         ) if part
     )
-    return await gather_facts(task)
+    # The name goes in as the subject, not just inside the task text: a build is the one
+    # case where the model is most tempted to search for the business itself, and it is
+    # exactly the case that cannot work.
+    return await gather_facts(task, subject=spec.get("name"))
 
 
 async def facts_for_edit(

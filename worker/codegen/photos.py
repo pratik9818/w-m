@@ -173,6 +173,28 @@ def _normalise_shot(raw) -> dict | None:
     }
 
 
+_SHAPE_REMINDER = (
+    "\n\nYour previous reply set `shots` to something other than a list. `shots` must be a "
+    "JSON array of objects, each with `purpose`, `query` and `alt`. Reply again in exactly "
+    "that shape."
+)
+
+
+def _merge_plan_usage(first: dict | None, second: dict | None) -> dict | None:
+    """Bill both attempts. A retry that is not counted makes the build look cheaper than
+    it was, which is how the cost of a malformed plan stayed invisible."""
+    if first is None:
+        return second
+    if second is None:
+        return first
+    return {
+        "model": second["model"],
+        "input_tokens": first["input_tokens"] + second["input_tokens"],
+        "output_tokens": first["output_tokens"] + second["output_tokens"],
+        "requests": first.get("requests", 1) + second.get("requests", 1),
+    }
+
+
 async def _plan_shots(spec: dict) -> tuple[list[dict], dict | None]:
     """What to photograph, in the business's own terms. Never raises: a build without
     photographs is a plainer site, while a build that dies over one is a failure the
@@ -180,19 +202,33 @@ async def _plan_shots(spec: dict) -> tuple[list[dict], dict | None]:
     prompt = PLAN_PROMPT.format(
         spec_json=json.dumps(spec, indent=2, ensure_ascii=False), max_shots=MAX_SHOTS
     )
-    try:
-        op, usage = await call_forced_tool(prompt, [PLAN_TOOL])
-    except (LLMCallFailed, DailyLimitReached) as exc:
-        logger.warning("photos.plan_failed", extra={"event": "photos.plan_failed", "error": str(exc)[:200]})
-        return [], None
+    # Two attempts, for the same reason builder._generate has two: a response in the wrong
+    # shape is a formatting failure, not a decision that photographs are unwanted. Observed
+    # live -- `shots` came back as a bare string, the call was abandoned, and a real site
+    # was built with no photographs at all while still being billed 2,050 tokens for the
+    # attempt. One retry is far cheaper than the plain site it prevents.
+    usage = None
+    raw_shots = None
+    for attempt in (1, 2):
+        try:
+            op, attempt_usage = await call_forced_tool(
+                prompt if attempt == 1 else prompt + _SHAPE_REMINDER, [PLAN_TOOL]
+            )
+        except (LLMCallFailed, DailyLimitReached) as exc:
+            logger.warning("photos.plan_failed", extra={"event": "photos.plan_failed", "error": str(exc)[:200]})
+            return [], usage
+        usage = _merge_plan_usage(usage, attempt_usage)
 
-    raw_shots = op.get("shots")
-    if not isinstance(raw_shots, list):
-        # Not the shape the schema asked for and nothing to salvage from it.
+        raw_shots = op.get("shots")
+        if isinstance(raw_shots, list):
+            break
         logger.warning(
             "photos.plan_malformed",
-            extra={"event": "photos.plan_malformed", "type": type(raw_shots).__name__},
+            extra={"event": "photos.plan_malformed", "attempt": attempt,
+                   "type": type(raw_shots).__name__},
         )
+    if not isinstance(raw_shots, list):
+        # Twice in the wrong shape, and nothing to salvage from it.
         return [], usage
 
     shots = [s for s in (_normalise_shot(r) for r in raw_shots[:MAX_SHOTS]) if s]

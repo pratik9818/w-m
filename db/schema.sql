@@ -36,6 +36,9 @@ CREATE TABLE businesses (
   current_version_id  uuid REFERENCES site_versions(id),
   deployment_url      text,
   cf_pages_project_name text,
+  cf_rum_site_tag text,
+  cf_rum_site_token text,
+  analytics_enabled_at timestamptz,
   extra_instructions  text,
   plan                text NOT NULL DEFAULT 'free',       -- reserved for future billing phase
   created_at          timestamptz NOT NULL DEFAULT now(),
@@ -64,7 +67,7 @@ CREATE INDEX idx_services_business ON services(business_id);
 CREATE TABLE media (
   id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   business_id  uuid NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
-  kind         text NOT NULL CHECK (kind IN ('logo','photo')),
+  kind         text NOT NULL CHECK (kind IN ('logo','photo','video','document')),
   storage_path text NOT NULL,
   url          text NOT NULL,
   sort_order   int NOT NULL DEFAULT 0,
@@ -84,6 +87,23 @@ CREATE TABLE edit_log (
   created_at            timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX idx_edit_log_business ON edit_log(business_id);
+
+-- What became of each edit, derived after the fact from what the owner did next.
+-- Rebuildable from edit_log at any time; see worker/learning/outcomes.py.
+CREATE TABLE edit_outcomes (
+  id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  edit_log_id        uuid NOT NULL UNIQUE REFERENCES edit_log(id) ON DELETE CASCADE,
+  business_id        uuid REFERENCES businesses(id) ON DELETE CASCADE,
+  owner_telegram_id  bigint,
+  label              text NOT NULL,   -- applied | reasked | superseded | proposed | clarify | clarify_loop | answered | failed
+  fault              text NOT NULL,   -- none | code | model | timing | unknown
+  signature          text,
+  detail             jsonb NOT NULL DEFAULT '{}',
+  occurred_at        timestamptz,
+  created_at         timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_outcomes_signature ON edit_outcomes(signature);
+CREATE INDEX idx_outcomes_occurred ON edit_outcomes(occurred_at);
 
 CREATE TABLE token_usage (
   id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -15,7 +15,7 @@ PROMPT_TEMPLATE = """You manage edits to a small business's website via chat. Th
 
 Current site content:
 {spec_json}
-{site_outline}{context_section}
+{site_outline}{lessons_section}{context_section}
 Owner's message:
 {raw_message}
 {plan_section}
@@ -42,6 +42,16 @@ Creative fields -- tagline, about: if the owner gives a vague or open instructio
 Attributed third-party claims -- customer quotes/reviews/testimonials, named awards, specific stats -- NEVER fabricate these under any function, even under the creative-fields allowance above. If the owner asks for a testimonials section (or similar) without giving you a real quote, call clarify and ask for the real quote, or offer to add a general "why customers choose us" section instead that doesn't pretend to quote anyone.
 
 Infeasible requests -- only these are genuinely not possible: online booking or calendars, payments or checkout, live chat, embedded maps or social feeds, customer logins, and a working enquiry form that sends messages (phone and email links work fine instead). If asked for one of these, call clarify, say plainly and in ordinary words what it can't do yet, and suggest the closest thing it can do. Never silently attempt something broken.
+
+## Pricing sections
+
+A pricing section is a fully supported thing to add, and no site is built with one, so "add a price section", "show your rates", "add a pricing table" is always a `patch_site`, never a clarify.
+
+It is built as its own section on the page, using `pricing-grid` with one `pricing-card` per tier or service, each carrying a `pricing-name`, a `pricing-price` and optionally a `pricing-period` and a `pricing-features` list. Say that in the instruction so the section gets built properly.
+
+**Never put prices in the FAQ.** That is what happened to a real owner who asked for a price section: with no pricing section defined anywhere, the model answered by adding price questions to the FAQ, which is not what anyone means by a price section.
+
+Use the real `price_label` values from the site content above. If the business has services but no price labels, still add the section and write the tier names from the real services, leaving the price for the owner to fill in -- say so in your `summary` -- because an invented price on a live business site is the one thing you must never publish.
 
 ## Pictures the site already has
 
@@ -421,6 +431,7 @@ async def parse_edit_message(
     context: list[dict] | None = None,
     files: dict[str, str] | None = None,
     plan: dict | None = None,
+    lessons: str = "",
 ) -> tuple[dict, dict]:
     """Parse a free-text edit message into a structured operation.
 
@@ -431,6 +442,11 @@ async def parse_edit_message(
     The usage is returned rather than discarded so the caller can bill it: every message
     the owner sends costs tokens even when it turns out not to be an edit at all, and
     dropping that made the quota under-report real spend.
+
+    `lessons` is what has already worked on this site, rendered by
+    worker/learning/lessons.py. Passed in rather than fetched here so this stays free of
+    the database -- the eval harness calls it with no session at all, and must keep being
+    able to.
     """
     spec_json = json.dumps(spec_from_business(business), indent=2, ensure_ascii=False)
     outline = outline_site(files)
@@ -443,6 +459,7 @@ async def parse_edit_message(
         raw_message=raw_message,
         plan_section=plan_section(plan),
         files_section=_files_section(business),
+        lessons_section=lessons,
     )
 
     try:

@@ -1,0 +1,975 @@
+[
+  {
+    "id": "reasked-90c0e7fe",
+    "fixture": "regression-deeptech-v3",
+    "message": "I am saying when I click on any item in FAQ section none of them open the details",
+    "generated": true,
+    "occurred_at": "2026-08-19T17:06:56.988918+00:00",
+    "site": "DeepTech",
+    "context": [
+      {
+        "raw_message": "Remove navbar section and instead of red bg , make it light gray",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      },
+      {
+        "raw_message": "Remove top , navbar section and do not use red , use light gray",
+        "outcome": {
+          "bot_asked": "shall I go ahead with clarify?"
+        }
+      },
+      {
+        "raw_message": "Remove the nav bar complelty and make red bg to gray",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      },
+      {
+        "raw_message": "In frequently asked questions section when I click on any box so they do not open , please fix this issue",
+        "outcome": {
+          "bot_asked": "shall I go ahead with clarify?"
+        }
+      }
+    ],
+    "forbid_identical": {
+      "targets": [
+        "services.html"
+      ],
+      "operation": "patch_site",
+      "instruction": "remove the onclick attribute from all elements in the FAQ section of services.html"
+    },
+    "note": "this ran without error and the owner asked for the same thing again 16 minutes later; the operation below did not satisfy them"
+  },
+  {
+    "id": "reasked-28e1ca90",
+    "fixture": "regression-engineer-portfolio-v4",
+    "message": "Still the same ui . Please add photo in background ,not above the text .\nThe photo should be in background. If u don't understand please ask",
+    "generated": true,
+    "occurred_at": "2026-08-20T15:17:07.725672+00:00",
+    "site": "Engineer Portfolio",
+    "context": [
+      {
+        "raw_message": "Please add that picture in background with less opacity so that text over it visible",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      }
+    ],
+    "forbid_identical": {
+      "targets": [
+        "style.css"
+      ],
+      "operation": "patch_site",
+      "instruction": "move hero background image behind the heading text"
+    },
+    "note": "this ran without error and the owner asked for the same thing again 30 minutes later; the operation below did not satisfy them"
+  },
+  {
+    "id": "reasked-0dc59928",
+    "fixture": "regression-engineer-portfolio-v8",
+    "message": "The section in main page where \"software that works for you \" present, i am taking about that section, I want to increase height of that section or part and also bold the text",
+    "generated": true,
+    "occurred_at": "2026-08-20T16:01:45.220692+00:00",
+    "site": "Engineer Portfolio",
+    "context": [
+      {
+        "raw_message": "Still the same ui . Please add photo in background ,not above the text .\nThe photo should be in background. If u don't understand please ask",
+        "outcome": {
+          "bot_asked": "shall I go ahead with clarify?"
+        }
+      },
+      {
+        "raw_message": "Remove 2nd image and put 1st image in background and text comes over it",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      },
+      {
+        "raw_message": "Do one thing remove the image but keep background image , do not remove it",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      },
+      {
+        "raw_message": "The section where main Heading persent in top , increase that section height and make it bold",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      }
+    ],
+    "forbid_identical": {
+      "targets": [
+        "style.css"
+      ],
+      "operation": "patch_site",
+      "instruction": "increase .hero-section min-height to 150vh and set .hero-section h1 font-weight to bold"
+    },
+    "note": "this ran without error and the owner asked for the same thing again 24 minutes later; the operation below did not satisfy them"
+  },
+  {
+    "id": "reasked-789c054f",
+    "fixture": "regression-engineer-portfolio-v8",
+    "message": "The section in main page where \"software that works for you \" present, i am taking about that section, I want to increase height of that section or part and also bold the text",
+    "generated": true,
+    "occurred_at": "2026-08-20T16:25:25.898185+00:00",
+    "site": "Engineer Portfolio",
+    "context": [
+      {
+        "raw_message": "Remove 2nd image and put 1st image in background and text comes over it",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      },
+      {
+        "raw_message": "Do one thing remove the image but keep background image , do not remove it",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      },
+      {
+        "raw_message": "The section where main Heading persent in top , increase that section height and make it bold",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      },
+      {
+        "raw_message": "The section in main page where \"software that works for you \" present, i am taking about that section, I want to increase height of that section or part and also bold the text",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      }
+    ],
+    "forbid_identical": {
+      "targets": [
+        "style.css"
+      ],
+      "operation": "patch_site",
+      "instruction": "make the section at the top of the home page that contains the text 'software that works for you' have twice the min-height and set its font-weight to bold"
+    },
+    "note": "this ran without error and the owner asked for the same thing again 15 minutes later; the operation below did not satisfy them"
+  },
+  {
+    "id": "reasked-1265b05a",
+    "fixture": "regression-engineer-portfolio-v11",
+    "message": "The section in main page where \"software that works for you \" present, i am taking about that section, I want to increase height of that section or part and also bold the text",
+    "generated": true,
+    "occurred_at": "2026-08-20T16:40:47.638052+00:00",
+    "site": "Engineer Portfolio",
+    "context": [
+      {
+        "raw_message": "Do one thing remove the image but keep background image , do not remove it",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      },
+      {
+        "raw_message": "The section where main Heading persent in top , increase that section height and make it bold",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      },
+      {
+        "raw_message": "The section in main page where \"software that works for you \" present, i am taking about that section, I want to increase height of that section or part and also bold the text",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      },
+      {
+        "raw_message": "The section in main page where \"software that works for you \" present, i am taking about that section, I want to increase height of that section or part and also bold the text",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      }
+    ],
+    "forbid_identical": {
+      "targets": [
+        "style.css"
+      ],
+      "operation": "patch_site",
+      "instruction": "set .hero min-height to 800px and .hero-title font-weight to bold"
+    },
+    "note": "this ran without error and the owner asked for the same thing again 36 minutes later; the operation below did not satisfy them"
+  },
+  {
+    "id": "reasked-e186e565",
+    "fixture": "regression-engineer-portfolio-v14",
+    "message": "The section in main page where \"software that works for you \" present, i am taking about that section, I want to increase height of that section or part and also bold the text",
+    "generated": true,
+    "occurred_at": "2026-08-20T17:16:53.996177+00:00",
+    "site": "Engineer Portfolio",
+    "context": [
+      {
+        "raw_message": "The section in main page where \"software that works for you \" present, i am taking about that section, I want to increase height of that section or part and also bold the text",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      },
+      {
+        "raw_message": "The section in main page where \"software that works for you \" present, i am taking about that section, I want to increase height of that section or part and also bold the text",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      },
+      {
+        "raw_message": "Please center the text and increase font size",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      },
+      {
+        "raw_message": "Nothing changes , font size not increased and not center also , please fix this",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      }
+    ],
+    "forbid_identical": {
+      "targets": [
+        "style.css"
+      ],
+      "operation": "patch_site",
+      "instruction": "set the hero section's min-height to 70vh and set the hero-title font-weight to bold"
+    },
+    "note": "this ran without error and the owner asked for the same thing again 7 minutes later; the operation below did not satisfy them"
+  },
+  {
+    "id": "reasked-3bef28ee",
+    "fixture": "regression-engineer-portfolio-v15",
+    "message": "The section in main page where \"software that works for you \" present, i am taking about that section, I want to increase height of that section or part and also bold the text",
+    "generated": true,
+    "occurred_at": "2026-08-20T17:23:38.291098+00:00",
+    "site": "Engineer Portfolio",
+    "context": [
+      {
+        "raw_message": "The section in main page where \"software that works for you \" present, i am taking about that section, I want to increase height of that section or part and also bold the text",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      },
+      {
+        "raw_message": "Please center the text and increase font size",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      },
+      {
+        "raw_message": "Nothing changes , font size not increased and not center also , please fix this",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      },
+      {
+        "raw_message": "The section in main page where \"software that works for you \" present, i am taking about that section, I want to increase height of that section or part and also bold the text",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      }
+    ],
+    "forbid_identical": {
+      "targets": [
+        "style.css"
+      ],
+      "operation": "patch_site",
+      "instruction": "increase the hero section's minimum height to 100vh and set the heading that reads 'Software that works for you' to bold"
+    },
+    "note": "this ran without error and the owner asked for the same thing again 2 minutes later; the operation below did not satisfy them"
+  },
+  {
+    "id": "reasked-a0a36663",
+    "fixture": "regression-engineer-portfolio-v16",
+    "message": "The section in main page where \"software that works for you \" present, i am taking about that section, I want to increase height of that section or part and also bold the text",
+    "generated": true,
+    "occurred_at": "2026-08-20T17:25:37.016767+00:00",
+    "site": "Engineer Portfolio",
+    "context": [
+      {
+        "raw_message": "Please center the text and increase font size",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      },
+      {
+        "raw_message": "Nothing changes , font size not increased and not center also , please fix this",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      },
+      {
+        "raw_message": "The section in main page where \"software that works for you \" present, i am taking about that section, I want to increase height of that section or part and also bold the text",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      },
+      {
+        "raw_message": "The section in main page where \"software that works for you \" present, i am taking about that section, I want to increase height of that section or part and also bold the text",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      }
+    ],
+    "forbid_identical": {
+      "targets": [
+        "style.css"
+      ],
+      "operation": "patch_site",
+      "instruction": "increase hero section's min-height to 100vh and set hero-title font-weight to bold"
+    },
+    "note": "this ran without error and the owner asked for the same thing again 21 minutes later; the operation below did not satisfy them"
+  },
+  {
+    "id": "reasked-c23a1099",
+    "fixture": "regression-engineer-portfolio-v18",
+    "message": "Can u center the text like now text is in top . I want them to in center position",
+    "generated": true,
+    "occurred_at": "2026-08-21T16:09:41.915201+00:00",
+    "site": "Engineer Portfolio",
+    "context": [
+      {
+        "raw_message": "The section in main page where \"software that works for you \" present, i am taking about that section, I want to increase height of that section or part and also bold the text",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      },
+      {
+        "raw_message": "set section.hero { min-height:800px; } .hero-title { font-weight:bold; }",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      },
+      {
+        "raw_message": "Center the text of hero section",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      },
+      {
+        "raw_message": "Why are u are not able to do this",
+        "outcome": {
+          "bot_asked": "shall I go ahead with clarify?"
+        }
+      }
+    ],
+    "forbid_identical": {
+      "targets": [
+        "style.css"
+      ],
+      "operation": "patch_site",
+      "instruction": "set text-align: center on .hero, .page-hero"
+    },
+    "note": "this ran without error and the owner asked for the same thing again 22 minutes later; the operation below did not satisfy them"
+  },
+  {
+    "id": "reasked-a6dcc97c",
+    "fixture": "regression-engineer-portfolio-v22",
+    "message": "Do one thing for mobile keep text center and for desktop, keep text at top as previous",
+    "generated": true,
+    "occurred_at": "2026-08-21T16:34:40.785205+00:00",
+    "site": "Engineer Portfolio",
+    "context": [
+      {
+        "raw_message": "Center the text of hero section",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      },
+      {
+        "raw_message": "Why are u are not able to do this",
+        "outcome": {
+          "bot_asked": "shall I go ahead with clarify?"
+        }
+      },
+      {
+        "raw_message": "Can u center the text like now text is in top . I want them to in center position",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      },
+      {
+        "raw_message": "Can u center the text like now text is in top . I want them to in center position",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      }
+    ],
+    "forbid_identical": {
+      "targets": [
+        "style.css"
+      ],
+      "operation": "patch_site",
+      "instruction": "change .hero to have justify-content:center; align-items:center; and add @media (min-width: 768px) { .hero { justify-content:flex-start; align-items:flex-start; } }"
+    },
+    "note": "this ran without error and the owner asked for the same thing again 3 minutes later; the operation below did not satisfy them"
+  },
+  {
+    "id": "reasked-0b6a8fa6",
+    "fixture": "regression-book-seller-v1",
+    "message": "Top section which is \"find your next great read \" and next section ehicts what we offer both section overlap to each other in mobile view",
+    "generated": true,
+    "occurred_at": "2026-08-22T16:14:06.171889+00:00",
+    "site": "Book Seller",
+    "context": [
+      {
+        "raw_message": "In Mobile, both top section and 2nd section are overlapping to each other",
+        "outcome": {
+          "rejected": "style change rejected: applied .section margin-top: 2rem but the stylesheet does not say so"
+        }
+      }
+    ],
+    "forbid_identical": {
+      "targets": [
+        "style.css"
+      ],
+      "operation": "patch_site",
+      "instruction": "Add margin-top: 2rem to .section-alt"
+    },
+    "note": "this ran without error and the owner asked for the same thing again 72 minutes later; the operation below did not satisfy them"
+  },
+  {
+    "id": "clarify_loop-827182b7",
+    "fixture": "regression-cryptopulse-predictions-v1",
+    "message": "Put below the section \"what cryptopulse prediction does for you\"",
+    "generated": true,
+    "occurred_at": "2026-08-23T14:55:16.930068+00:00",
+    "site": "CryptoPulse Predictions",
+    "context": [
+      {
+        "raw_message": "Add trading charts and graph in website. and  change background image and put some trading related image in background",
+        "outcome": {
+          "bot_asked": "Where on the site should the trading charts and graph be added?"
+        }
+      }
+    ],
+    "forbid_operation": [
+      "clarify"
+    ],
+    "note": "the bot asked twice without understanding; it must not ask again"
+  },
+  {
+    "id": "clarify_loop-56602fbb",
+    "fixture": "regression-cryptopulse-predictions-v1",
+    "message": "Put some images of crypto charts",
+    "generated": true,
+    "occurred_at": "2026-08-23T14:55:48.426473+00:00",
+    "site": "CryptoPulse Predictions",
+    "context": [
+      {
+        "raw_message": "Add trading charts and graph in website. and  change background image and put some trading related image in background",
+        "outcome": {
+          "bot_asked": "Where on the site should the trading charts and graph be added?"
+        }
+      },
+      {
+        "raw_message": "Put below the section \"what cryptopulse prediction does for you\"",
+        "outcome": {
+          "bot_asked": "What specific content or element would you like to place below the 'What CryptoPulse Predictions Does for You' section?"
+        }
+      }
+    ],
+    "forbid_operation": [
+      "clarify"
+    ],
+    "note": "the bot asked twice without understanding; it must not ask again"
+  },
+  {
+    "id": "clarify_loop-38c6af44",
+    "fixture": "regression-cryptopulse-predictions-v1",
+    "message": "Some in middle in website",
+    "generated": true,
+    "occurred_at": "2026-08-23T14:56:31.187197+00:00",
+    "site": "CryptoPulse Predictions",
+    "context": [
+      {
+        "raw_message": "Add trading charts and graph in website. and  change background image and put some trading related image in background",
+        "outcome": {
+          "bot_asked": "Where on the site should the trading charts and graph be added?"
+        }
+      },
+      {
+        "raw_message": "Put below the section \"what cryptopulse prediction does for you\"",
+        "outcome": {
+          "bot_asked": "What specific content or element would you like to place below the 'What CryptoPulse Predictions Does for You' section?"
+        }
+      },
+      {
+        "raw_message": "Put some images of crypto charts",
+        "outcome": {
+          "bot_asked": "Where on the site would you like the crypto chart images to be placed?"
+        }
+      }
+    ],
+    "forbid_operation": [
+      "clarify"
+    ],
+    "note": "the bot asked twice without understanding; it must not ask again"
+  },
+  {
+    "id": "clarify_loop-a82f8c40",
+    "fixture": "regression-cryptopulse-predictions-v1",
+    "message": "Put in insight section",
+    "generated": true,
+    "occurred_at": "2026-08-23T14:59:17.005491+00:00",
+    "site": "CryptoPulse Predictions",
+    "context": [
+      {
+        "raw_message": "Add trading charts and graph in website. and  change background image and put some trading related image in background",
+        "outcome": {
+          "bot_asked": "Where on the site should the trading charts and graph be added?"
+        }
+      },
+      {
+        "raw_message": "Put below the section \"what cryptopulse prediction does for you\"",
+        "outcome": {
+          "bot_asked": "What specific content or element would you like to place below the 'What CryptoPulse Predictions Does for You' section?"
+        }
+      },
+      {
+        "raw_message": "Put some images of crypto charts",
+        "outcome": {
+          "bot_asked": "Where on the site would you like the crypto chart images to be placed?"
+        }
+      },
+      {
+        "raw_message": "Some in middle in website",
+        "outcome": {
+          "bot_asked": "What exactly would you like to place or modify in the middle of the website?"
+        }
+      }
+    ],
+    "forbid_operation": [
+      "clarify"
+    ],
+    "note": "the bot asked twice without understanding; it must not ask again"
+  },
+  {
+    "id": "clarify_loop-0b757948",
+    "fixture": "regression-cryptopulse-predictions-v1",
+    "message": "Images of trading charts",
+    "generated": true,
+    "occurred_at": "2026-08-23T15:00:17.244533+00:00",
+    "site": "CryptoPulse Predictions",
+    "context": [
+      {
+        "raw_message": "Put below the section \"what cryptopulse prediction does for you\"",
+        "outcome": {
+          "bot_asked": "What specific content or element would you like to place below the 'What CryptoPulse Predictions Does for You' section?"
+        }
+      },
+      {
+        "raw_message": "Put some images of crypto charts",
+        "outcome": {
+          "bot_asked": "Where on the site would you like the crypto chart images to be placed?"
+        }
+      },
+      {
+        "raw_message": "Some in middle in website",
+        "outcome": {
+          "bot_asked": "What exactly would you like to place or modify in the middle of the website?"
+        }
+      },
+      {
+        "raw_message": "Put in insight section",
+        "outcome": {
+          "bot_asked": "What specific content or element would you like to place in the insight section?"
+        }
+      }
+    ],
+    "forbid_operation": [
+      "clarify"
+    ],
+    "note": "the bot asked twice without understanding; it must not ask again"
+  },
+  {
+    "id": "failed-f1963050",
+    "fixture": "regression-nft-gallery-v1",
+    "message": "Yes you do it",
+    "generated": true,
+    "occurred_at": "2026-08-24T17:14:06.443330+00:00",
+    "site": "NFT Gallery",
+    "context": [
+      {
+        "raw_message": "There are no images whole website is empty except header and bottom",
+        "outcome": {
+          "bot_asked": "Your site currently has no images at all — where would you like them to come from? Can you upload or link the NFT artwork/photos you want shown (hero background, gallery pieces, section images), or sh"
+        }
+      }
+    ],
+    "forbid_operation": [
+      "clarify"
+    ],
+    "note": "failed in production: guard: structural request routed to a patch"
+  },
+  {
+    "id": "clarify_loop-9f07e4d6",
+    "fixture": "regression-nft-gallery-v1",
+    "message": "Get it from pixel",
+    "generated": true,
+    "occurred_at": "2026-08-25T17:57:21.376498+00:00",
+    "site": "NFT Gallery",
+    "context": [
+      {
+        "raw_message": "There are no images whole website is empty except header and bottom",
+        "outcome": {
+          "bot_asked": "Your site currently has no images at all — where would you like them to come from? Can you upload or link the NFT artwork/photos you want shown (hero background, gallery pieces, section images), or sh"
+        }
+      },
+      {
+        "raw_message": "Yes you do it",
+        "outcome": {
+          "rejected": "rejected: structural request sent to patch_site"
+        }
+      },
+      {
+        "raw_message": "Single landing page",
+        "outcome": {
+          "bot_asked": "Your site is already built as a single landing page (About, Services, and Contact are all sections on the one page). What would you like changed about that — e.g. remove the menu links so it's just th"
+        }
+      },
+      {
+        "raw_message": "There are no images whole website is empty except header and bottom",
+        "outcome": {
+          "bot_asked": "Your site's gallery and showcase sections have no pictures because none were uploaded. Could you send me the images you'd like used (or links to them) — e.g. the NFT artworks for the showcase — so I c"
+        }
+      }
+    ],
+    "forbid_operation": [
+      "clarify"
+    ],
+    "note": "the bot asked twice without understanding; it must not ask again"
+  },
+  {
+    "id": "failed-f1025b14",
+    "fixture": "regression-5-minute-site-bot-v3",
+    "message": "Remove service as well",
+    "generated": true,
+    "occurred_at": "2026-08-25T18:57:25.553445+00:00",
+    "site": "5-Minute Site Bot",
+    "context": [
+      {
+        "raw_message": "One change i want in bottom there is heading five minutes from now, you could have a link to send , remove this from bottom and add it to top in place of type what you need . Get a live website",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      },
+      {
+        "raw_message": "Remove the about service and contact element",
+        "outcome": {
+          "bot_asked": "Just to confirm: do you want me to remove the About and Contact parts of the page (nav links and their sections), or also remove the \"What the bot does for you\" services section as well?"
+        }
+      },
+      {
+        "raw_message": "Only nav links",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      }
+    ],
+    "forbid_operation": [
+      "clarify"
+    ],
+    "note": "failed in production: guard: structural request routed to a patch"
+  },
+  {
+    "id": "failed-862487fd",
+    "fixture": "regression-5-minute-site-bot-v3",
+    "message": "No only remove service elements from top",
+    "generated": true,
+    "occurred_at": "2026-08-25T18:58:22.820617+00:00",
+    "site": "5-Minute Site Bot",
+    "context": [
+      {
+        "raw_message": "One change i want in bottom there is heading five minutes from now, you could have a link to send , remove this from bottom and add it to top in place of type what you need . Get a live website",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      },
+      {
+        "raw_message": "Remove the about service and contact element",
+        "outcome": {
+          "bot_asked": "Just to confirm: do you want me to remove the About and Contact parts of the page (nav links and their sections), or also remove the \"What the bot does for you\" services section as well?"
+        }
+      },
+      {
+        "raw_message": "Only nav links",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      },
+      {
+        "raw_message": "Remove service as well",
+        "outcome": {
+          "rejected": "rejected: structural request sent to patch_site"
+        }
+      }
+    ],
+    "forbid_operation": [
+      "clarify"
+    ],
+    "note": "failed in production: guard: structural request routed to a patch"
+  },
+  {
+    "id": "failed-c1043272",
+    "fixture": "regression-5-minute-site-bot-v3",
+    "message": "Single landing page",
+    "generated": true,
+    "occurred_at": "2026-08-25T18:59:32.523324+00:00",
+    "site": "5-Minute Site Bot",
+    "context": [
+      {
+        "raw_message": "Remove the about service and contact element",
+        "outcome": {
+          "bot_asked": "Just to confirm: do you want me to remove the About and Contact parts of the page (nav links and their sections), or also remove the \"What the bot does for you\" services section as well?"
+        }
+      },
+      {
+        "raw_message": "Only nav links",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      },
+      {
+        "raw_message": "Remove service as well",
+        "outcome": {
+          "rejected": "rejected: structural request sent to patch_site"
+        }
+      },
+      {
+        "raw_message": "No only remove service elements from top",
+        "outcome": {
+          "rejected": "rejected: structural request sent to patch_site"
+        }
+      }
+    ],
+    "forbid_operation": [
+      "clarify"
+    ],
+    "note": "failed in production: guard: structural request routed to a patch"
+  },
+  {
+    "id": "failed-5046dd5b",
+    "fixture": "regression-5-minute-site-bot-v3",
+    "message": "Yed",
+    "generated": true,
+    "occurred_at": "2026-08-25T19:01:34.467883+00:00",
+    "site": "5-Minute Site Bot",
+    "context": [
+      {
+        "raw_message": "Only nav links",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      },
+      {
+        "raw_message": "Remove service as well",
+        "outcome": {
+          "rejected": "rejected: structural request sent to patch_site"
+        }
+      },
+      {
+        "raw_message": "No only remove service elements from top",
+        "outcome": {
+          "rejected": "rejected: structural request sent to patch_site"
+        }
+      },
+      {
+        "raw_message": "Single landing page",
+        "outcome": {
+          "rejected": "rejected: structural request sent to patch_site"
+        }
+      }
+    ],
+    "forbid_operation": [
+      "clarify"
+    ],
+    "note": "failed in production: guard: structural request routed to a patch"
+  },
+  {
+    "id": "clarify_loop-13e35cf9",
+    "fixture": "regression-webgenie-bot-v3",
+    "message": "Change background image , put something more my business related.\nChange the image in 2 nd section , put something chat interface and the image ingave put that instead",
+    "generated": true,
+    "occurred_at": "2026-08-27T17:24:53.365375+00:00",
+    "site": "WebGenie Bot",
+    "context": [
+      {
+        "raw_message": "I have telegram bot which can make website without writing code , just talk to bot like u do human , it will generate website according to you business and give hosted live link.\nU get seo and mobile optimize website . U can see you website traffic and all . \nCreate a website and host within 5 minute",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      },
+      {
+        "raw_message": "When clicking on start chatting redirect to them telegram",
+        "outcome": {
+          "bot_asked": "What's the Telegram link or username the \"Start Chatting\" button should open (e.g. https://t.me/YourBotName)?"
+        }
+      },
+      {
+        "raw_message": "Yes , my bot name is teko",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      },
+      {
+        "raw_message": "Change background image , put something more my business related.\nChange the image in 2 nd section , put something chat interface , i am giving image put that",
+        "outcome": {
+          "bot_asked": "Could you send over the chat-interface image you'd like used in the second section?"
+        }
+      }
+    ],
+    "forbid_operation": [
+      "clarify"
+    ],
+    "note": "the bot asked twice without understanding; it must not ask again"
+  },
+  {
+    "id": "clarify_loop-775a7688",
+    "fixture": "regression-webgenie-bot-v3",
+    "message": "Please update the photos of above chats",
+    "generated": true,
+    "occurred_at": "2026-08-27T17:35:55.347651+00:00",
+    "site": "WebGenie Bot",
+    "context": [
+      {
+        "raw_message": "Please get those images from internet",
+        "outcome": {
+          "bot_asked": "shall I go ahead with patch_site?"
+        }
+      },
+      {
+        "raw_message": "2nd image is not good , put something chat like interface",
+        "outcome": {
+          "bot_asked": "shall I go ahead with patch_site?"
+        }
+      },
+      {
+        "raw_message": "2nd image is not good , put something chat like interface",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      },
+      {
+        "raw_message": "Now use this",
+        "outcome": {
+          "bot_asked": "Could you clarify what you'd like changed now? Your last message (\"Now use this\") doesn't specify what to update."
+        }
+      }
+    ],
+    "forbid_operation": [
+      "clarify"
+    ],
+    "note": "the bot asked twice without understanding; it must not ask again"
+  },
+  {
+    "id": "clarify_loop-4a4252cb",
+    "fixture": "regression-webgenie-bot-v9",
+    "message": "Start over with new website",
+    "generated": true,
+    "occurred_at": "2026-08-27T19:29:58.724225+00:00",
+    "site": "WebGenie Bot",
+    "context": [
+      {
+        "raw_message": "Wait",
+        "outcome": {
+          "rejected": "rejected: business busy (status=generating)"
+        }
+      },
+      {
+        "raw_message": "No , put that image in 2 nd section which a website build the way section",
+        "outcome": {
+          "bot_asked": "shall I go ahead with patch_site?"
+        }
+      },
+      {
+        "raw_message": "No , put that image in 2 nd section which a website build the way section",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      },
+      {
+        "raw_message": "Create new website",
+        "outcome": {
+          "bot_asked": "You already have a live website for WebGenie Bot — did you want to start over with a completely new design, or did you mean something else (like a specific change to the current site)?"
+        }
+      }
+    ],
+    "forbid_operation": [
+      "clarify"
+    ],
+    "note": "the bot asked twice without understanding; it must not ask again"
+  },
+  {
+    "id": "clarify_loop-06480a59",
+    "fixture": "regression-xtravu-v2",
+    "message": "Yes visitor traffic",
+    "generated": true,
+    "occurred_at": "2026-08-28T10:29:08.066595+00:00",
+    "site": "Xtravu",
+    "context": [
+      {
+        "raw_message": "Add price section \n5 k price upto 10 screen , 3 k price upto 100 screen and 1.5 k price for 500 screen .",
+        "outcome": {
+          "bot_asked": "shall I go ahead with patch_site?"
+        }
+      },
+      {
+        "raw_message": "Add price section \n5 k price upto 10 screen , 3 k price upto 100 screen and 1.5 k price for 500 screen .",
+        "outcome": {
+          "applied": "patch_site",
+          "summary": "applied to the site"
+        }
+      },
+      {
+        "raw_message": "What is the visit count",
+        "outcome": {
+          "bot_asked": "Are you asking about visitor traffic/analytics for your website, or something else? This isn't something I can see or add to the site itself — could you clarify what you need?"
+        }
+      }
+    ],
+    "forbid_operation": [
+      "clarify"
+    ],
+    "note": "the bot asked twice without understanding; it must not ask again"
+  }
+]

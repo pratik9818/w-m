@@ -47,6 +47,11 @@ REDUCED_EFFORT = "low"
 # thinking -- the model decides how much it needs -- but not a deep budget for it.
 TOOL_EFFORT = "low"
 
+# How many searches one lookup may run. Every result is fed back into the request as input,
+# so this is a token budget wearing a different name: uncapped, a single lookup reached
+# 25,117 input tokens. Two is enough for the research step, which asks one question.
+WEB_SEARCH_MAX_USES = 2
+
 # Generous, and not the real bound on a long generation: that is streamed, so the ceiling
 # that matters is the model's own. This is for a connection that has stopped responding.
 REQUEST_TIMEOUT_SECONDS = 600
@@ -186,8 +191,12 @@ async def call_plain_completion(
 
     `online=True` gives the model Anthropic's server-side web search, for the one step that
     genuinely needs a fact about a real business. It runs on Anthropic's servers, and the
-    model decides whether to search at all, so it costs nothing extra when the answer was
-    already in the prompt.
+    model decides whether to search at all.
+
+    It is not cheap, and it was described here as though it were. Search results come back
+    into the request as *input*, so one lookup was measured at 25,117 input tokens -- 32% of
+    a whole build -- for 330 tokens of answer. `max_uses` is what bounds that: without it a
+    model that keeps searching keeps growing the input, and nothing in the request says stop.
     """
     request = {
         "model": MODEL,
@@ -197,7 +206,13 @@ async def call_plain_completion(
         "messages": [{"role": "user", "content": prompt}],
     }
     if online:
-        request["tools"] = [{"type": "web_search_20260209", "name": "web_search"}]
+        request["tools"] = [
+            {
+                "type": "web_search_20260209",
+                "name": "web_search",
+                "max_uses": WEB_SEARCH_MAX_USES,
+            }
+        ]
 
     try:
         async with _client().messages.stream(**request) as stream:

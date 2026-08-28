@@ -14,6 +14,7 @@ these undocumented endpoints in the future, the fallback is shelling out to
 """
 import base64
 import json
+from datetime import datetime, timezone
 
 import blake3
 import httpx
@@ -21,6 +22,7 @@ import httpx
 from bot_api.config import get_settings
 from db.models import Business
 from worker.codegen.seo import finalise_urls
+from worker.tasks.web_analytics import ensure_analytics_site, inject_beacon
 
 API_BASE = "https://api.cloudflare.com/client/v4"
 
@@ -41,6 +43,13 @@ async def deploy_to_cloudflare_pages(
     dict that came in: a first build cannot know its own address, so its canonical tags and
     sitemap are filled in here. The caller stores *these* bytes, because the version record
     has to be what is actually live -- the next edit patches against it.
+
+    Also sets `business.cf_rum_site_tag`, `.cf_rum_site_token` and `.analytics_enabled_at`
+    the first time a site is deployed, and the caller's existing commit persists them.
+    These are set rather than returned because deploy both reads them (to reuse the token
+    on every later deploy) and writes them (once, here) -- returning them would leave one
+    field with two sources of truth. Every caller already commits the business immediately
+    after this returns, which is what makes it work.
     """
     settings = get_settings()
     account_id = settings.cloudflare_account_id
@@ -61,12 +70,37 @@ async def deploy_to_cloudflare_pages(
         # build already has the address and leaves no marker for this to find.
         files = finalise_urls(files, f"https://{subdomain}")
 
+        # Counting visitors is the point at which an owner finds out whether any of this
+        # worked. It is also the one step here allowed to fail quietly: a site published
+        # without a beacon has lost a number nobody has yet, whereas a site that failed to
+        # publish because the analytics API was unwell has lost the owner their website.
+        await _ensure_beacon(business, subdomain)
+        files = inject_beacon(files, business.cf_rum_site_token)
+
         manifest = {f"/{name}": _hash_file(name, content) for name, content in files.items()}
         upload_jwt = await _get_upload_jwt(client, headers, account_id, project_name)
         await _upload_assets(client, upload_jwt, files, manifest)
         await _create_deployment(client, headers, account_id, project_name, manifest)
 
     return project_name, f"https://{subdomain}", files
+
+
+async def _ensure_beacon(business: Business, host: str) -> None:
+    """Make sure `business` has a Web Analytics identity, provisioning one if not.
+
+    Never raises. A site whose token could not be issued -- most often because the
+    Cloudflare API token is scoped for Pages only -- simply deploys without a beacon and
+    tries again on the next deploy.
+    """
+    if business.cf_rum_site_token:
+        return
+    provisioned = await ensure_analytics_site(host)
+    if provisioned is None:
+        return
+    business.cf_rum_site_tag, business.cf_rum_site_token = provisioned
+    # Recorded now, not when the first visit arrives, so "no visits last month" can be
+    # told apart from "nothing was counting last month".
+    business.analytics_enabled_at = datetime.now(timezone.utc)
 
 
 def _hash_file(filename: str, content: str) -> str:

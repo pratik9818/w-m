@@ -24,6 +24,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from db.models import Business, Media, Service  # noqa: E402
 from evals.cases import CASES  # noqa: E402
+from bot_api.services.analytics import looks_like_a_traffic_question  # noqa: E402
+from evals.promote import load_regressions  # noqa: E402
 from worker.codegen.css_values import effective_styles, html_classes  # noqa: E402
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -115,6 +117,17 @@ def evaluate(case: dict, op: dict, fixture: dict) -> list[str]:
     if expected and op["operation"] not in expected:
         problems.append(f"chose {op['operation']}, wanted one of {sorted(expected)}")
 
+    forbidden = case.get("forbid_operation")
+    if forbidden and op["operation"] in forbidden:
+        problems.append(f"chose {op['operation']}, which is the failure this case records")
+
+    # For a case promoted from a real "the owner asked again" failure. We know this exact
+    # answer did not satisfy them; we do not know which one would have, so landing on it a
+    # second time is the only thing worth failing on.
+    if (previous := case.get("forbid_identical")) is not None:
+        if _without_from(op) == _without_from(previous):
+            problems.append("produced the same operation that the owner rejected before")
+
     for pattern in case.get("forbid_text", []):
         if re.search(pattern, blob, re.IGNORECASE):
             problems.append(f"says {pattern!r}, which it must not")
@@ -171,6 +184,14 @@ async def run(cases: list[dict], repeat: int) -> int:
         chosen: list[dict] = []
         for _ in range(repeat):
             try:
+                # Mirror the handler's routing, not just the parser. In production a
+                # question about visitors is answered from Cloudflare before the parser
+                # is ever called, and a corpus that skips that step reports a failure the
+                # owner could not have experienced -- while charging a model call to do
+                # it. The first promoted case to fail here failed for exactly that reason.
+                if looks_like_a_traffic_question(case["message"]):
+                    outcomes.append(evaluate(case, {"operation": "answer_traffic"}, fixture))
+                    continue
                 op, usage = await parse_edit_message(
                     case["message"], business, case.get("context"), fixture["files"]
                 )
@@ -205,12 +226,16 @@ def main() -> None:
     parser.add_argument("--case", action="append", help="run only these case ids")
     parser.add_argument("--repeat", type=int, default=1,
                         help="parse each case N times; models are stochastic")
+    parser.add_argument("--handwritten-only", action="store_true",
+                        help="skip the cases promoted from real failures")
     args = parser.parse_args()
 
-    cases = CASES
+    # Hand-written cases first, then everything the bot has failed at in production.
+    # evals/promote.py grows the second list; nobody types those out.
+    cases = list(CASES) + ([] if args.handwritten_only else load_regressions())
     if args.case:
         wanted = set(args.case)
-        cases = [case for case in CASES if case["id"] in wanted]
+        cases = [case for case in cases if case["id"] in wanted]
         missing = wanted - {case["id"] for case in cases}
         if missing:
             sys.exit(f"No such case: {', '.join(sorted(missing))}")

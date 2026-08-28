@@ -28,6 +28,46 @@ CONTACT_HREF_PATTERN = re.compile(r"^(tel:|mailto:)\S+$")
 # a page that renders but says almost nothing is a defect, not a pass.
 MIN_PAGE_WORDS = 150
 
+# The screenshot size, unchanged: this is what the owner is sent and what the before/after
+# comparison is measured on, so it must stay fixed even though the checks now resize.
+SHOT_WIDTH, SHOT_HEIGHT = 1280, 900
+
+# The widths every page is measured at. Chosen to be the edges people actually own rather
+# than a tidy ladder: a small phone, the tablet/large-phone crossover, the narrowest common
+# laptop, the laptop the sandbox already used, and a full desktop monitor. 1280 is included
+# even though it was already the only size tested -- dropping it would lose the one width
+# with a track record.
+LAYOUT_WIDTHS = (
+    (390, "a phone"),
+    (768, "a tablet"),
+    (1024, "a small laptop"),
+    (1280, "a laptop"),
+    (1920, "a desktop monitor"),
+)
+
+# Sideways scroll, plus the widest offending element so a repair has something to aim at.
+# `documentElement.scrollWidth` is the whole rendered page, so this catches an element that
+# pushes the page wide even when nothing visibly hangs off the edge.
+OVERFLOW_PROBE = """() => {
+  const vw = document.documentElement.clientWidth;
+  const overflow = document.documentElement.scrollWidth > vw + 1;
+  let widest = null, widestPx = vw + 1;
+  if (overflow) {
+    for (const el of document.querySelectorAll('body *')) {
+      const r = el.getBoundingClientRect();
+      if (r.right > widestPx || r.width > widestPx) {
+        widestPx = Math.max(r.right, r.width);
+        widest = el.tagName.toLowerCase() + (
+          typeof el.className === 'string' && el.className.trim()
+            ? '.' + el.className.trim().split(/\\s+/).slice(0, 2).join('.')
+            : ''
+        ) + ' (' + Math.round(Math.max(r.right, r.width)) + 'px wide in ' + vw + 'px)';
+      }
+    }
+  }
+  return {overflow, widest};
+}"""
+
 # Deliberately broken output for proving the harness actually catches failures: a thrown
 # JS error and a broken <img> reference. Costs no API calls.
 #
@@ -130,6 +170,7 @@ async def sandbox_test(
         broken_images: list[str] = []
         bad_contact: list[str] = []
         broken_internal: list[str] = []
+        overflowing: list[str] = []
         css_statuses: list[int | None] = []
 
         async with async_playwright() as pw:
@@ -154,6 +195,7 @@ async def sandbox_test(
             broken_images += result["broken_images"]
             bad_contact += result["bad_contact"]
             broken_internal += result["broken_internal"]
+            overflowing += result["overflowing"]
             css_statuses.append(result["css_status"])
 
         css_status = next((s for s in css_statuses if s is not None), None)
@@ -179,6 +221,11 @@ async def sandbox_test(
         )
         checks.append(
             {"name": "internal_links_valid", "passed": not broken_internal, "detail": broken_internal}
+        )
+        # The only check here that asks whether the page *fits the screen it is on*. Every
+        # other one would pass a site that scrolls sideways on every phone.
+        checks.append(
+            {"name": "fits_every_screen", "passed": not overflowing, "detail": overflowing}
         )
 
         # Source-level, not DOM-level: Chromium repairs malformed markup before the DOM
@@ -250,7 +297,7 @@ async def _capture(browser, url: str) -> tuple[bytes, bytes] | None:
     The viewport shot is what the owner is sent; the full-page shot is what gets compared,
     because a change below the fold is still a change.
     """
-    page = await browser.new_page(viewport={"width": 1280, "height": 900})
+    page = await browser.new_page(viewport={"width": SHOT_WIDTH, "height": SHOT_HEIGHT})
     try:
         await page.goto(url, wait_until="networkidle", timeout=30000)
         return await page.screenshot(), await page.screenshot(full_page=True)
@@ -284,6 +331,7 @@ async def _check_page(browser, base_url: str, page_name: str, files: dict[str, s
     out: dict[str, list] = {
         "failed_loads": [], "console_errors": [], "page_errors": [],
         "thin_pages": [], "broken_images": [], "bad_contact": [], "broken_internal": [],
+        "overflowing": [],
     }
     out["css_status"] = None  # type: ignore[assignment]
 
@@ -292,12 +340,20 @@ async def _check_page(browser, base_url: str, page_name: str, files: dict[str, s
     # Prefixed with the page name so a repair can be aimed at the file that produced it:
     # files_needing_repair() reads the filename off the front of each detail, and a bare
     # "Unexpected token ')'" belongs to no file, so it got broadcast to all of them.
-    page.on(
-        "console",
-        lambda msg: out["console_errors"].append(f"{page_name}: {msg.text}")
-        if msg.type == "error"
-        else None,
-    )
+    def _record_console(msg) -> None:
+        if msg.type != "error":
+            return
+        # A page is allowed to load a font, an icon pack or a CSS library from a CDN, and
+        # none of those can be reached from inside an isolated sandbox. The browser logs a
+        # failed request for each, which is a fact about the sandbox's network and not
+        # about the owner's site -- and acting on it commissioned a whole-site repair for
+        # a script that was never broken. Only errors raised by the page's own code count.
+        source = (msg.location or {}).get("url") or ""
+        if source and not source.startswith(base_url):
+            return
+        out["console_errors"].append(f"{page_name}: {msg.text}")
+
+    page.on("console", _record_console)
     page.on("pageerror", lambda exc: out["page_errors"].append(f"{page_name}: {exc}"))
     page.on("response", lambda resp: responses.update({resp.url: resp.status}))
 
@@ -341,8 +397,47 @@ async def _check_page(browser, base_url: str, page_name: str, files: dict[str, s
         if target.lstrip("./") not in files:
             out["broken_internal"].append(f"{page_name} -> {href!r}")
 
+    out["overflowing"] += await _overflow_at_each_width(page, page_name)
+
     await page.close()
     return out
+
+
+async def _overflow_at_each_width(page, page_name: str) -> list[str]:
+    """Widths where the page scrolls sideways, and the element responsible.
+
+    Every check above this one is functional -- does it load, do the images resolve, is the
+    markup well formed. None of them looks at *layout*, and the single 1280px viewport
+    everything ran at is one laptop size out of the range real people use. So a site could
+    pass all eight checks and still be broken on a phone or a large monitor, and three
+    owners reported exactly that: fine on mobile, "inconsistent" on a laptop.
+
+    Sideways scroll is the one layout fault worth failing a build over: it is unambiguous
+    (no judgement about whether a design looks right), it is always a defect, and it is what
+    a person actually notices. The viewport is resized on the page already open rather than
+    reloading it, so the whole sweep costs a few hundred milliseconds.
+    """
+    found: list[str] = []
+    for width, label in LAYOUT_WIDTHS:
+        try:
+            await page.set_viewport_size({"width": width, "height": 900})
+            result = await page.evaluate(OVERFLOW_PROBE)
+        except Exception:
+            logger.warning("could not measure %s at %dpx", page_name, width, exc_info=True)
+            continue
+        if result["overflow"]:
+            culprit = result["widest"] or "unknown element"
+            # Deliberately prefixed with style.css, not the page. `files_needing_repair`
+            # routes a problem to whatever filename it starts with, and a page that
+            # scrolls sideways is almost always a width, a min-width or a grid in the
+            # stylesheet -- sending the repair at the HTML would rewrite the wrong file.
+            found.append(
+                f"style.css: {page_name} scrolls sideways on {label} ({width}px) "
+                f"-- {culprit}"
+            )
+    # Put it back, so the screenshot the owner is sent is the size it was always taken at.
+    await page.set_viewport_size({"width": SHOT_WIDTH, "height": SHOT_HEIGHT})
+    return found
 
 
 async def _wait_until_ready(url: str) -> None:

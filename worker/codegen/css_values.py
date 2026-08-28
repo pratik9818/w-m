@@ -113,18 +113,67 @@ class RuleSpan(NamedTuple):
 
 
 def iter_rule_spans(css: str) -> Iterator[RuleSpan]:
-    """Yield every top-level `prelude { body }` in source order, with offsets."""
+    """Yield every top-level `prelude { body }` in source order, with offsets.
+
+    Comments are skipped rather than stripped, because callers splice edits back into the
+    original string by these offsets and stripping would shift every one of them.
+
+    Skipping them is not a tidiness measure. Every generated stylesheet opens with a
+    prose comment the model wrote about the design, and prose contains apostrophes -- one
+    real sheet began "one signal-green accent showing what's live", whose apostrophe was
+    read as the start of a CSS string. Nothing ever closed it, so the remaining 19,600
+    characters looked like string content, three rules were found in a file of 136, and
+    every style edit below that comment failed verification and was silently dropped. The
+    planner never noticed because it strips comments before reading; only the executor,
+    which must keep offsets, walked into it.
+    """
     depth = 0
     start = 0
     opened_at = -1
     quote = ""
-    for index, char in enumerate(css):
-        if quote:
-            if char == quote and css[index - 1] != "\\":
-                quote = ""
+    in_comment = False
+    index = 0
+    length = len(css)
+
+    while index < length:
+        char = css[index]
+
+        if in_comment:
+            if char == "*" and css.startswith("*/", index):
+                in_comment = False
+                index += 2
+                continue
+            index += 1
             continue
+
+        if quote:
+            if char == "\\":
+                # Skip the escaped character whole, so a trailing backslash cannot make
+                # the next quote look escaped.
+                index += 2
+                continue
+            if char == quote or char == "\n":
+                # A CSS string cannot contain a raw newline, so a quote still open at a
+                # line break belongs to a malformed file. Ending it here bounds the damage
+                # instead of letting it run to the end of the stylesheet.
+                quote = ""
+            index += 1
+            continue
+
+        if char == "/" and css.startswith("/*", index):
+            in_comment = True
+            index += 2
+            continue
+
         if char in "\"'":
-            quote = char
+            # Only a quote that actually closes on the same line opens a string. A lone
+            # apostrophe is far more often someone's prose than the start of one, and
+            # guessing "string" costs every rule below it; guessing "stray character"
+            # costs nothing, because braces inside CSS strings are vanishingly rare.
+            closing = css.find(char, index + 1)
+            newline = css.find("\n", index + 1)
+            if closing != -1 and (newline == -1 or closing < newline):
+                quote = char
         elif char == "{":
             depth += 1
             if depth == 1:
@@ -132,13 +181,19 @@ def iter_rule_spans(css: str) -> Iterator[RuleSpan]:
         elif char == "}":
             if depth == 1:
                 yield RuleSpan(
-                    prelude=css[start:opened_at].strip(),
+                    # Comments are stripped from the prelude but not from the file: a rule
+                    # written under a section heading like `/* Buttons */` would otherwise
+                    # have that text read as part of its selector and match nothing. The
+                    # body offsets below still index the original string, which is what
+                    # callers splice their edits into.
+                    prelude=_COMMENT_RE.sub("", css[start:opened_at]).strip(),
                     body=css[opened_at + 1:index],
                     body_start=opened_at + 1,
                     body_end=index,
                 )
                 start = index + 1
             depth = max(depth - 1, 0)
+        index += 1
 
 
 def _scan_blocks(css: str) -> Iterator[tuple[str, str]]:

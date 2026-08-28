@@ -56,6 +56,13 @@ expecting to see.
 - Sections: `section`, `section-alt` (alternate background band), `section-title`,
   `section-intro`
 - Cards: `card-grid`, `card`, `card-title`, `card-text`
+- Pricing: `pricing-grid`, `pricing-card`, `pricing-name`, `pricing-price`,
+  `pricing-period`, `pricing-features`
+  - **Only build a pricing section when you are actually asked for one** — either the page
+    requirements below call for it, or the instruction you were given asks for it. Never
+    add one on your own initiative, and never put prices in the FAQ instead: prices belong
+    in a `pricing-grid`, one `pricing-card` per tier or service, with the real price label
+    in `pricing-price` and never an invented figure.
 - Process steps: `steps`, `step`, `step-number`, `step-title`, `step-text`
 - FAQ: `faq-list`, `faq-item`, `faq-question`, `faq-answer`
 - Call to action: `cta-band`, `cta-title`, `cta-text`

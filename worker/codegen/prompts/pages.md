@@ -41,9 +41,15 @@ or city in it whenever the business data gives one:
 Each page gets its own: `About Us | Rise & Crumb`, `Our Services | …`, `Contact & Opening
 Hours | …`. Two pages with the same title compete with each other.
 
-**The description**, 140–160 characters, one or two plain sentences naming what they do,
-where, and one reason to choose them. It is an advert, not a summary — no "Welcome to our
-website", and never a sentence that would fit any business at all.
+**The description**, one or two plain sentences naming what they do, where, and one reason
+to choose them. It is an advert, not a summary — no "Welcome to our website", and never a
+sentence that would fit any business at all.
+
+Aim for around 140 characters and never exceed 155. **155 is a ceiling, not a target:
+finish your sentence and stop.** Running to the ceiling and breaking off mid-word is worse
+than being short — a real site shipped `…Trusted by Pizza Hut, McDonald` and that fragment
+is the whole of what a searcher sees before deciding whether to click. A complete
+130-character sentence beats a 155-character one that stops in the middle of a word.
 
 Write both from the business data. Never invent a town, a speciality, or a claim like
 "award-winning" that you have not been given.

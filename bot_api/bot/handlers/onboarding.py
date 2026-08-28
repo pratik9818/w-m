@@ -101,10 +101,17 @@ async def on_brief(message: Message, state: FSMContext) -> None:
     brief = message.text.strip()[:MAX_BRIEF_CHARS]
     data = await state.get_data()
     history = data.get("brief_history", [])
+    # Present only when the owner has already been shown a summary and replied with
+    # something other than a yes. That makes this a correction to a brief they have read,
+    # not a fresh description, and it is parsed as one.
+    current = data.get("parsed")
 
-    await message.answer("🧠 Reading that and putting your site together...")
+    await message.answer(
+        "🧠 Making that change..." if current
+        else "🧠 Reading that and putting your site together..."
+    )
     try:
-        op, usage = await parse_business_brief(brief, history)
+        op, usage = await parse_business_brief(brief, history, current=current)
     except DailyLimitReached:
         logger.warning("brief parsing hit the daily limit")
         await message.answer(
@@ -135,32 +142,62 @@ async def on_brief(message: Message, state: FSMContext) -> None:
     # alongside what they already said instead of replacing it.
     await state.update_data(parsed=op, brief_history=history + [brief])
     await state.set_state(OnboardingStates.waiting_confirm)
-    await message.answer(_brief_summary(op) + "\n\nReply <b>yes</b> to build it, or tell "
-                         "me what to change and I'll take another look.")
+    await message.answer(_brief_summary(op, previous=current) + "\n\nReply <b>yes</b> to "
+                         "build it, or tell me what to change and I'll take another look.")
 
 
-def _brief_summary(op: dict) -> str:
-    """What was understood from the brief, itemised so a wrong line is easy to spot."""
+def _changed_fields(op: dict, previous: dict | None) -> set[str]:
+    """Which fields this pass actually moved. Empty when there is nothing to compare to."""
+    if not previous:
+        return set()
+    keys = set(op) | set(previous)
+    return {key for key in keys if key != "operation" and op.get(key) != previous.get(key)}
+
+
+def _brief_summary(op: dict, previous: dict | None = None) -> str:
+    """What was understood from the brief, itemised so a wrong line is easy to spot.
+
+    After a correction, the lines that actually moved are marked. The owner is re-reading a
+    summary they have already read once, and without a marker they have to diff two walls of
+    text by eye to find out whether the one thing they asked for landed.
+    """
+    changed = _changed_fields(op, previous)
+
+    def mark(key: str) -> str:
+        return " ← updated" if key in changed else ""
+
     lines = [f"Here's what I've got for <b>{_clip(op.get('name'), 'name') or 'your site'}</b>:", ""]
     layout = "one-page landing site" if str(op.get("layout", "")).lower().startswith("land") \
         else "four-page site"
-    lines.append(f"• <b>Type:</b> {str(op.get('category') or 'Other').strip()}, as a {layout}")
+    type_mark = mark("category") or mark("layout")
+    lines.append(
+        f"• <b>Type:</b> {str(op.get('category') or 'Other').strip()}, as a {layout}{type_mark}"
+    )
     for label, key, limit in (("Tagline", "tagline", "tagline"), ("About", "about", "about")):
         value = _clip(op.get(key), limit)
         if value:
-            lines.append(f"• <b>{label}:</b> {value}")
+            lines.append(f"• <b>{label}:</b> {value}{mark(key)}")
     services = [
         str(item.get("name")).strip()
         for item in (op.get("services") or [])[:MAX_SERVICES]
         if isinstance(item, dict) and item.get("name")
     ]
     if services:
-        lines.append(f"• <b>Services:</b> {', '.join(services)}")
+        lines.append(f"• <b>Services:</b> {', '.join(services)}{mark('services')}")
     contact = [
         str(op.get(key)).strip() for key in ("phone", "email", "address") if op.get(key)
     ]
     if contact:
-        lines.append(f"• <b>Contact:</b> {' · '.join(contact)}")
+        contact_mark = mark("phone") or mark("email") or mark("address")
+        lines.append(f"• <b>Contact:</b> {' · '.join(contact)}{contact_mark}")
+    if previous and not changed:
+        # The correction produced an identical brief. Saying nothing here leaves the owner
+        # re-reading the same summary with no idea their message landed at all.
+        lines.append("")
+        lines.append(
+            "<i>That didn't change anything here — it may be something to ask for once "
+            "the site is built.</i>"
+        )
     return "\n".join(lines)
 
 

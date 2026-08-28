@@ -290,3 +290,52 @@ def test_a_landing_page_keeps_every_photograph():
 
 def test_no_photos_allocates_nothing_without_failing():
     assert allocate_photos([], builder.PAGE_GROUPS) == {g: [] for g in builder.PAGE_GROUPS}
+
+
+# ------------------------------------------------- a malformed plan gets a second go
+#
+# Observed live: `shots` came back as a bare string, the call was abandoned, and the site
+# was built with no photographs at all -- while still being billed 2,050 tokens for the
+# attempt. One retry is cheaper than the plain site it prevents.
+
+@pytest.mark.asyncio
+async def test_a_malformed_plan_is_retried_once(monkeypatch, pexels):
+    calls = []
+
+    async def flaky_tool(prompt, tools):
+        calls.append(prompt)
+        if len(calls) == 1:
+            return {"operation": "choose_photographs", "shots": "sourdough bread"}, {
+                "model": "m", "input_tokens": 10, "output_tokens": 5
+            }
+        return {"operation": "choose_photographs", "shots": [
+            {"purpose": "hero", "query": "sourdough bread bakery", "alt": "Fresh loaves"},
+        ]}, {"model": "m", "input_tokens": 12, "output_tokens": 6}
+
+    monkeypatch.setattr(photos, "call_forced_tool", flaky_tool)
+    found, usage = await photos.find_photos(SPEC)
+
+    assert len(calls) == 2, "a wrong shape is a formatting failure, worth exactly one retry"
+    assert "must be a" in calls[1], "the retry has to say what shape was wanted"
+    assert found, "the second attempt's photographs are used"
+    # Both attempts are billed. A retry that goes uncounted is how the cost of a malformed
+    # plan stayed invisible in the first place.
+    assert usage["input_tokens"] == 22
+
+
+@pytest.mark.asyncio
+async def test_two_malformed_plans_give_up_without_failing_the_build(monkeypatch, pexels):
+    calls = []
+
+    async def always_wrong(prompt, tools):
+        calls.append(prompt)
+        return {"operation": "choose_photographs", "shots": "nope"}, {
+            "model": "m", "input_tokens": 10, "output_tokens": 5
+        }
+
+    monkeypatch.setattr(photos, "call_forced_tool", always_wrong)
+    found, usage = await photos.find_photos(SPEC)
+
+    assert len(calls) == 2, "two attempts, then stop -- not an unbounded loop"
+    assert found == [], "a build without photographs is a plainer site, not a failure"
+    assert usage["input_tokens"] == 20

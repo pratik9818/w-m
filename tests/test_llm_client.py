@@ -190,7 +190,13 @@ async def test_mechanical_edits_do_not_pay_for_deliberation(api):
 async def test_a_lookup_gets_web_search_and_a_build_does_not(api):
     api["install"](_text("- a fact"))
     await llm_client.call_plain_completion("look this up", online=True)
-    assert api["tools"] == [{"type": "web_search_20260209", "name": "web_search"}]
+    assert api["tools"] == [{
+        "type": "web_search_20260209",
+        "name": "web_search",
+        # Search results are billed as input, so an uncapped lookup is an uncapped bill --
+        # one was measured at 25,117 input tokens.
+        "max_uses": llm_client.WEB_SEARCH_MAX_USES,
+    }]
 
     api.pop("tools")
     api["install"](_text("<html></html>"))

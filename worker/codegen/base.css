@@ -60,6 +60,18 @@ img { max-width: 100%; height: auto; }
 .card-title { margin: 0 0 .5rem; font-size: 1.125rem; }
 .card-text { margin: 0; }
 
+/* No page requirement builds a pricing section, so a site only has one because an edit
+   added it -- and that edit patches the pages, which the per-site stylesheet knows nothing
+   about. These rules are what stop such a section rendering as naked text. They cost no
+   model tokens: this file is static and prepended by _with_base_css. */
+.pricing-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1.25rem; }
+.pricing-card { display: flex; flex-direction: column; gap: .5rem; padding: 1.5rem;
+  border: 1px solid rgba(0, 0, 0, .12); border-radius: .5rem; }
+.pricing-name { margin: 0; font-size: 1.125rem; font-weight: 700; }
+.pricing-price { margin: 0; font-size: 1.75rem; font-weight: 700; line-height: 1.1; }
+.pricing-period { margin: 0; font-size: .875rem; opacity: .75; }
+.pricing-features { margin: .5rem 0 0; padding: 0 0 0 1.1rem; display: grid; gap: .35rem; }
+
 .steps { display: grid; gap: 1.25rem; list-style: none; margin: 0; padding: 0; }
 .step { display: flex; gap: 1rem; align-items: flex-start; }
 .step-number { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
@@ -92,6 +104,18 @@ details[open] > .faq-question::after { content: "\2212"; }
 .contact-item { display: flex; flex-wrap: wrap; gap: .5rem; }
 .contact-label { font-weight: 600; }
 .contact-value { }
+
+/* Video and downloadable files. Guaranteed here for the same reason the pricing rules
+   are: nothing builds them by default, so a video added by a later edit would otherwise
+   land with no rules at all. A video without max-width overflows every phone. */
+.video-wrap { margin: 1.5rem 0; }
+.site-video { display: block; width: 100%; max-width: 100%; height: auto; border-radius: 4px; background: #000; }
+.video-caption { margin: .5rem 0 0; font-size: .9rem; }
+.doc-list { display: grid; gap: .75rem; list-style: none; margin: 1.5rem 0; padding: 0; }
+.doc-link { display: inline-flex; align-items: center; gap: .5rem; padding: .7rem 1.2rem;
+  border: 1px solid currentColor; border-radius: 4px; text-decoration: none; font-weight: 600; }
+.doc-link:hover, .doc-link:focus { opacity: .85; }
+.doc-note { margin: .35rem 0 0; font-size: .85rem; }
 
 .site-footer { padding: 2rem 0; }
 .footer-inner { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1.5rem; }

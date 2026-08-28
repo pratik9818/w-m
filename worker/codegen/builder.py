@@ -29,7 +29,7 @@ from worker.codegen.design_brief import (
 from worker.codegen.quota import check_quota, record_usage
 from worker.codegen.photos import allocate_photos, find_photos, photos_section
 from worker.codegen.research import facts_for_build, facts_for_edit
-from worker.codegen.seo import crawl_files
+from worker.codegen.seo import crawl_files, tidy_description
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 
@@ -89,6 +89,17 @@ CONTRACT_CLASSES = frozenset({
     "hero", "page-hero", "hero-inner", "hero-title", "hero-subtitle", "hero-bg",
     "section", "section-alt", "section-title", "section-intro",
     "card-grid", "card", "card-title", "card-text",
+    # Never built by default -- no page requirement asks for one. They are here so that a
+    # pricing section added later by an edit is styled by base.css rather than landing
+    # naked, and is not counted as stylesheet drift. "Add a price section" previously had
+    # nowhere to go and the model put prices in the FAQ.
+    "pricing-grid", "pricing-card", "pricing-name", "pricing-price", "pricing-period",
+    "pricing-features",
+    # Same reasoning as the pricing block above: never built by default, added only when an
+    # owner sends a video or a PDF, and guaranteed by base.css so they are styled the
+    # moment they land rather than counting as stylesheet drift.
+    "video-wrap", "site-video", "video-caption",
+    "doc-list", "doc-link", "doc-note",
     "steps", "step", "step-number", "step-title", "step-text",
     "faq-list", "faq-item", "faq-question", "faq-answer",
     "cta-band", "cta-title", "cta-text",
@@ -145,7 +156,7 @@ LANDING_REQUIREMENTS = (
     "offers, as a `card-grid`. Use the real services and price labels if the data has "
     "them; otherwise describe the kind of work in general terms with nothing invented.\n"
     "  - A 'how it works' process section using `steps`, 3-5 `step` blocks.\n"
-    "  - An FAQ using `faq-list`, 4-6 items, each a `<details class=\"faq-item\">` with "
+    "  - An FAQ using `faq-list`, 3-4 items, each a `<details class=\"faq-item\">` with "
     "`<summary class=\"faq-question\">` and `<div class=\"faq-answer\">` so it opens on click.\n"
     "  - `<section class=\"section\" id=\"contact\">` — a `contact-list` of the real "
     "contact details only, phone as a `tel:` link and email as a `mailto:` link, plus "
@@ -162,7 +173,7 @@ PAGE_REQUIREMENTS = {
         "and a `btn btn-primary` link to `contact.html`.\n"
         "  - An introduction section of 2-3 substantial paragraphs explaining what the business "
         "does and who it is for.\n"
-        "  - A highlights section: a `card-grid` of 3-6 `card` blocks, each with a `card-title` "
+        "  - A highlights section: a `card-grid` of 3-4 `card` blocks, each with a `card-title` "
         "and 2-3 sentences of `card-text`.\n"
         "  - A section previewing what the business offers, pointing to `services.html`.\n"
         "  - A 'why choose us' section of 3-4 points.\n"
@@ -188,7 +199,7 @@ PAGE_REQUIREMENTS = {
         "descriptive terms, with no invented names or prices.\n"
         "  - A 'how it works' process section using `steps`, with 3-5 `step` blocks each "
         "carrying a `step-number`, `step-title` and `step-text`.\n"
-        "  - An FAQ using `faq-list`, with 4-6 items. Each item MUST be a "
+        "  - An FAQ using `faq-list`, with 3-4 items. Each item MUST be a "
         "`<details class=\"faq-item\">` containing `<summary class=\"faq-question\">` for the "
         "question and `<div class=\"faq-answer\">` for the answer, so it opens when clicked "
         "with no JavaScript. Write questions a real customer in this category would ask, and "
@@ -354,7 +365,10 @@ def _assemble_page(spec: dict, filename: str, fragment: str, brief: dict,
         spec,
         filename,
         title.group(1).strip() if title else str(spec.get("name") or "Website"),
-        desc.group(1).strip() if desc else (spec.get("tagline") or ""),
+        # Tidied here, at the one point the description enters the page: `render_page` uses
+        # it for the meta tag and hands the same string to `head_tags` for og:description
+        # and twitter:description, so all three are fixed by fixing it once.
+        tidy_description(desc.group(1).strip() if desc else (spec.get("tagline") or "")),
         main.group(0),
         font_link(brief),
         # A CDN stylesheet or library the page asked for. It sits before <main> in the

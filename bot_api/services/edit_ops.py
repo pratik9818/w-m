@@ -208,8 +208,60 @@ def widen_targets_for_pictures(instruction: str, targets: list[str]) -> list[str
     return targets + ["index.html"]
 
 
+PRICING_WORDS = ("pricing", "price", "prices", "cost", "costs", "rate", "rates",
+                 "how much", "fees", "tariff", "packages")
+
+
+def widen_targets_for_pricing(instruction: str, targets: list[str]) -> list[str]:
+    """Add the stylesheet when a pricing section is being added to a page.
+
+    A pricing section is the one structure no build ever produces -- no page requirement
+    asks for one -- so the site's own stylesheet has never seen `pricing-grid` and has no
+    rule for it. base.css keeps such a section from rendering naked, but the result is a
+    generic box that ignores the site's palette and typography. Patching style.css in the
+    same edit is what gets it dressed like the rest of the site.
+
+    Deterministic for the same reason as the picture rule above: the prompt says it too,
+    and the prompt is not what we rely on.
+    """
+    if not targets or STYLESHEET_FILE in targets:
+        return targets
+    if not any(t.endswith(".html") for t in targets):
+        return targets
+    if not any(word in instruction.lower() for word in PRICING_WORDS):
+        return targets
+    return targets + [STYLESHEET_FILE]
+
+
+def coerce_targets(value) -> list[str]:
+    """Whatever the model returned for `targets`, as a list of filenames.
+
+    The tool schema asks for an array and usually gets one. But a real request arrived
+    with targets as the single string "index.html, style.css", and Python iterates a
+    string one character at a time: every filename check ran against "i", "n", "d", so
+    nothing matched, the list came out empty, and the owner's whole request was thrown
+    away with "I'm not sure which part of your site you mean". They had just said "yes".
+
+    A comma-separated string is not ambiguous -- it is a list written a different way --
+    so it is read rather than refused. Rejecting a message a person clearly meant, over
+    the difference between a comma and a bracket, is never the right trade.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [part for part in re.split(r"[,\s]+", value.strip()) if part]
+    if isinstance(value, (list, tuple, set)):
+        names: list[str] = []
+        for item in value:
+            # A one-element list holding a comma-separated string is the same mistake
+            # wearing a bracket.
+            names.extend(coerce_targets(item) if isinstance(item, str) else [str(item)])
+        return names
+    return [str(value)]
+
+
 def normalize_patch_targets(
-    targets: list[str] | None, available: list[str] | None = None
+    targets: list[str] | str | None, available: list[str] | None = None
 ) -> list[str]:
     """Keep only filenames that actually exist on THIS site.
 
@@ -220,7 +272,7 @@ def normalize_patch_targets(
     landing site those sections all live in index.html.
     """
     known = [n for n in PATCHABLE_FILES if available is None or n in available]
-    requested = {str(t).strip().lstrip("./").lower() for t in (targets or [])}
+    requested = {t.strip().lstrip("./").lower() for t in coerce_targets(targets)}
     resolved = [name for name in known if name.lower() in requested]
     if resolved:
         return resolved

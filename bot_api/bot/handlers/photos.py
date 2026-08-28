@@ -29,7 +29,14 @@ from bot_api.services.session import (
     push_edit_turn,
     set_pending_photo,
 )
-from bot_api.services.storage import UploadRejected, upload_media
+from bot_api.services.storage import (
+    DOCUMENT_TYPES,
+    IMAGE_TYPES,
+    VIDEO_TYPES,
+    UploadRejected,
+    check_size,
+    upload_media,
+)
 from db.base import session_scope
 from db.models import Media
 from worker.codegen.builder import page_files_for
@@ -293,7 +300,20 @@ async def _place_photo(
         return
 
     business_id = uuid.UUID(pending["business_id"])
-    if choice is not None:
+    media_type = pending.get("media_type", "photo")
+
+    if media_type == "video":
+        # One templated spot, because "at the top" is the only place asked for often
+        # enough to be worth fixing in advance. Everything else goes through the
+        # free-form instruction, which can put it anywhere on the page.
+        kind = "video"
+        instruction_template = (
+            VIDEO_HERO_INSTRUCTION if _VIDEO_TOP_RE.search(words or "")
+            else VIDEO_FREEFORM_INSTRUCTION
+        )
+    elif media_type == "document":
+        kind, instruction_template = "document", DOCUMENT_INSTRUCTION
+    elif choice is not None:
         kind, instruction_template = PLACEMENTS[choice]
     else:
         kind, instruction_template = "photo", FREEFORM_PLACEMENT
@@ -311,6 +331,10 @@ async def _place_photo(
             # Only one logo: replace any previous one rather than stacking them up.
             for existing in [m for m in business.media if m.kind == "logo"]:
                 await session.delete(existing)
+        elif kind in ("video", "document"):
+            # No cap of their own yet, and no de-duplication: a second PDF is usually a
+            # second document (a menu and a wine list), not the same one sent twice.
+            pass
         elif not reuse and len([m for m in business.media if m.kind == "photo"]) >= MAX_GALLERY_PHOTOS:
             await clear_pending_photo(redis, telegram_user_id)
             await reply_to.answer(
@@ -339,6 +363,8 @@ async def _place_photo(
     pages = list(page_files_for(layout))
     if choice == "logo":
         targets = pages
+    elif media_type in ("video", "document"):
+        targets = _page_named_in(words, pages)
     elif choice is not None:
         targets = [pages[0]]
     else:
@@ -348,7 +374,8 @@ async def _place_photo(
         business_id, trigger="edit",
         patch={
             "instruction": instruction_template.format(
-                url=pending["url"], name=name, words=words.strip()),
+                url=pending["url"], name=name, words=words.strip(),
+                filename=pending.get("filename", "")),
             "targets": targets,
             "user_message": words or f"(placed a photo: {choice})",
         },
@@ -357,11 +384,15 @@ async def _place_photo(
     # this, an owner who uploaded a photo and then said "put that picture in the
     # background" got asked "which photo?" -- the upload had happened in a completely
     # separate handler that left no trace of itself anywhere the parser could see.
-    doing = CONFIRMATION[choice] if choice is not None else f'putting it where you said: "{words.strip()}"'
+    noun = {"video": "video", "document": "PDF"}.get(media_type, "picture")
+    if media_type in ("video", "document") or choice is None:
+        doing = f'putting it where you said: "{words.strip()}"'
+    else:
+        doing = CONFIRMATION[choice]
     await push_edit_turn(
-        redis, business_id, "(sent a photo)",
-        {"photo_url": pending["url"], "applied": "photo",
-         "summary": f"{doing} — the picture is at {pending['url']}"},
+        redis, business_id, f"(sent a {noun})",
+        {"photo_url": pending["url"], "applied": media_type,
+         "summary": f"{doing} — the {noun} is at {pending['url']}"},
     )
     await reply_to.answer(f"Great — {doing}. I'll message you when it's live!")
 
@@ -390,6 +421,14 @@ async def on_placement_reply(message: Message) -> None:
     if is_declining(message.text):
         await clear_pending_photo(redis, message.from_user.id)
         await message.answer("No problem — I've left your site as it is.")
+        return
+
+    # The five templated spots are all about photographs -- a logo, a gallery, behind the
+    # heading. Matching a video or a PDF against them would put a menu in the photo
+    # gallery, so those go straight to their own instruction with the owner's words.
+    pending = await get_pending_photo(redis, message.from_user.id)
+    if pending and pending.get("media_type") in ("video", "document"):
+        await _place_photo(message, message.from_user.id, words=message.text)
         return
 
     choice = placement_from_text(message.text)
@@ -431,3 +470,225 @@ async def on_photo_placement(callback: CallbackQuery) -> None:
     if choice in PLACEMENTS:
         await _place_photo(callback.message, callback.from_user.id, choice)
     await callback.answer()
+
+
+# --------------------------------------------------------------- video and documents
+
+# A video and a PDF land in the same pending slot as a photograph and are answered with
+# the same open question, because the owner's problem is identical -- "I have a file, put
+# it somewhere on my site" -- and a second parallel flow would be a second place for the
+# same bugs to live.
+
+VIDEO_PLACEMENT_QUESTION = (
+    "Got your video! Whereabouts on your site would you like it?\n\n"
+    "Tell me in your own words — for example <i>\"at the top\"</i>, "
+    "<i>\"in the about section\"</i>, or <i>\"near the bottom of the page\"</i>.\n\n"
+    "<i>It won't play by itself — visitors tap to start it, which is what keeps your page "
+    "quick to load on a phone.</i>"
+)
+
+VIDEO_HERO_INSTRUCTION = (
+    "Show this video near the top of the page, just below the hero heading and its text. "
+    'Use exactly:\n<div class="video-wrap"><video class="site-video" controls '
+    'preload="metadata" playsinline src="{url}"></video></div>\n'
+    "Rules: never add autoplay, never add loop, and never add muted-autoplay. The video "
+    "must not start on its own -- a video that plays by itself on a phone costs the "
+    "visitor their data and is the fastest way to make them leave. If a video is already "
+    "on this page, REPLACE it with this one rather than adding a second. Change nothing "
+    "else."
+)
+
+VIDEO_FREEFORM_INSTRUCTION = (
+    "The owner has just sent a video and said where they want it. Their exact words:\n"
+    '"{words}"\n\n'
+    "The video is already uploaded and lives at this address:\n{url}\n\n"
+    "Put it where they asked, using exactly:\n"
+    '<div class="video-wrap"><video class="site-video" controls preload="metadata" '
+    'playsinline src="{url}"></video></div>\n'
+    "Rules:\n"
+    "- Use that URL character for character. Never edit it and never invent another one.\n"
+    "- Never add autoplay, loop or muted autoplay. The visitor presses play.\n"
+    "- If a video is already on the page and they asked to change or move it, replace it "
+    "rather than leaving two.\n"
+    '- If they counted sections ("the 2nd section"), count the visible <section> blocks '
+    "down the page in order, not counting the header or the footer.\n"
+    "- Change nothing else on the page."
+)
+
+DOCUMENT_PLACEMENT_QUESTION = (
+    "Got your PDF — <b>{filename}</b>.\n\n"
+    "Whereabouts should the download link go, and what should it say?\n\n"
+    "For example <i>\"put a Download our menu button in the middle of the page\"</i> or "
+    "<i>\"add it to the contact section as our price list\"</i>. If you just say where, "
+    "I'll label it sensibly."
+)
+
+DOCUMENT_INSTRUCTION = (
+    "The owner has just uploaded a PDF and said where the download link should go. Their "
+    'exact words:\n"{words}"\n\n'
+    "The file is already uploaded and lives at this address:\n{url}\n\n"
+    "Add a link to it where they asked, using exactly:\n"
+    '<a class="doc-link" href="{url}" target="_blank" rel="noopener">LABEL</a>\n'
+    "Rules:\n"
+    "- Replace LABEL with what they called it. If they did not name it, write a plain "
+    'label from the file name -- "{filename}" -- in ordinary words, e.g. "Download our '
+    'menu". Never leave the word LABEL on the page.\n'
+    "- Use that URL character for character. Never edit it and never invent another one.\n"
+    "- target=\"_blank\" and rel=\"noopener\" are required so the visitor does not lose "
+    "the page when they open it.\n"
+    "- If a link to this same file is already on the page, move it rather than adding a "
+    "second copy.\n"
+    "- Change nothing else on the page."
+)
+
+# Only one spot is templated for a video -- the top of the page -- because that is the one
+# place a video is asked for often enough to be worth a fixed template. Everything else
+# goes through the free-form instruction, which can put it anywhere.
+_VIDEO_TOP_RE = re.compile(
+    r"\b(?:at|on|near|to) the top\b|\bhero\b|\bbanner\b|\bvery top\b|"
+    r"\btop of (?:the|my) (?:page|site|website)\b",
+    re.IGNORECASE,
+)
+
+
+def _clean_filename(name: str | None) -> str:
+    """A file name safe to put in a storage path and to show to the owner."""
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", (name or "file").strip()).strip("-.")
+    return (stem or "file")[:60]
+
+
+async def _accept_upload(message: Message, kind: str, file_id: str, file_size: int | None,
+                         filename: str, content_type: str, question: str) -> None:
+    """Download, store and hold one file, then ask where it goes.
+
+    Shared by video and PDF. Photographs keep their own handler because they carry the
+    de-duplication path and five templated placements that neither of these needs.
+    """
+    business = await _resolve_business(message.from_user.id)
+    if business is None:
+        await message.answer(
+            "Which site is that for? Use /mysites to pick one, or /newsite to build your "
+            "first site."
+        )
+        return
+
+    if is_business_busy(business):
+        await message.answer(
+            f"I'm still updating <b>{business.name}</b> — send that again in a minute."
+        )
+        return
+
+    # Checked before the download, not after: Telegram reports the size on the message, so
+    # an owner sending a 60MB video can be told immediately instead of waiting for a
+    # transfer that was never going to be allowed to finish.
+    try:
+        check_size(kind, file_size)
+    except UploadRejected as exc:
+        await message.answer(str(exc))
+        return
+
+    await message.answer("Got it — one moment while I save that…")
+
+    try:
+        file = await message.bot.get_file(file_id)
+        buffer = await message.bot.download_file(file.file_path)
+        content = buffer.read()
+    except Exception:
+        logger.exception("%s download failed for business %s", kind, business.id)
+        await message.answer(
+            f"Sorry, I couldn't save that {kind} — please try sending it again."
+        )
+        return
+
+    try:
+        uploaded = await upload_media(business.id, kind, filename, content, content_type)
+    except UploadRejected as exc:
+        await message.answer(str(exc))
+        return
+    except Exception:
+        logger.exception("%s upload failed for business %s", kind, business.id)
+        await message.answer(
+            f"Sorry, I couldn't save that {kind} — please try sending it again."
+        )
+        return
+
+    await set_pending_photo(
+        get_redis(), message.from_user.id,
+        {"business_id": str(business.id), "url": uploaded["url"],
+         "storage_path": uploaded["storage_path"], "media_type": kind,
+         "filename": filename},
+    )
+    await push_edit_turn(
+        get_redis(), business.id, f"(sent a {kind})",
+        {"photo_url": uploaded["url"], "bot_asked": question},
+    )
+    await message.answer(question)
+
+
+@router.message(default_state, F.video)
+async def on_video(message: Message) -> None:
+    video = message.video
+    await _accept_upload(
+        message, "video", video.file_id, video.file_size,
+        _clean_filename(video.file_name or f"{video.file_unique_id}.mp4"),
+        video.mime_type or "video/mp4",
+        VIDEO_PLACEMENT_QUESTION,
+    )
+
+
+@router.message(default_state, F.document)
+async def on_document(message: Message) -> None:
+    """A file sent as a file rather than as a photo or a video.
+
+    This is the handler that did not exist, and its absence was a silent dead end. Sending
+    a picture "as a file" is something Telegram does by default from a computer, and an
+    owner who did it got no reply of any kind -- no error, no explanation -- and no way to
+    tell whether the bot was broken or ignoring them.
+    """
+    document = message.document
+    mime = (document.mime_type or "").lower()
+    filename = _clean_filename(document.file_name or document.file_unique_id)
+
+    if mime in IMAGE_TYPES:
+        # A photograph that happened to be sent uncompressed. It is a photograph.
+        await _accept_upload(
+            message, "photo", document.file_id, document.file_size, filename, mime,
+            PLACEMENT_QUESTION,
+        )
+        return
+
+    if mime in DOCUMENT_TYPES:
+        await _accept_upload(
+            message, "document", document.file_id, document.file_size, filename, mime,
+            DOCUMENT_PLACEMENT_QUESTION.format(filename=filename),
+        )
+        return
+
+    if mime in VIDEO_TYPES:
+        await _accept_upload(
+            message, "video", document.file_id, document.file_size, filename, mime,
+            VIDEO_PLACEMENT_QUESTION,
+        )
+        return
+
+    await message.answer(UNSUPPORTED_FILE_REPLY)
+
+
+# Anything else a person can attach to a Telegram message: voice notes, music, stickers,
+# contacts, locations. None of them can go on a website, but every one of them used to be
+# met with total silence, which reads as a broken bot rather than an unsupported file.
+UNSUPPORTED_FILE_REPLY = (
+    "I can't put that sort of file on a website, I'm afraid.\n\n"
+    "What I can use:\n"
+    "• <b>Photos</b> — JPEG, PNG or WebP, up to 20MB\n"
+    "• <b>Videos</b> — MP4, WebM or MOV, up to 20MB\n"
+    "• <b>PDFs</b> — menus, price lists, brochures, up to 5MB\n\n"
+    "Send me one of those and I'll ask where you'd like it. Or just tell me what you'd "
+    "like changed on your site in your own words."
+)
+
+
+@router.message(default_state, F.audio | F.voice | F.sticker | F.animation
+                | F.video_note | F.contact | F.location | F.poll)
+async def on_unsupported_file(message: Message) -> None:
+    await message.answer(UNSUPPORTED_FILE_REPLY)
