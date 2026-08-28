@@ -104,3 +104,76 @@ def test_missing_or_empty_stylesheet_is_not_an_error():
     assert style_digest(None) == ""
     assert style_digest({"index.html": "<p>hi</p>"}) == ""
     assert style_digest({"style.css": "", "index.html": "<p>hi</p>"}) == ""
+
+
+# ------------------------------------------------- the scanner behind every style edit
+
+# Verbatim from a real stored stylesheet (Xtravu). Every generated sheet opens with a
+# prose comment the model wrote about the design, and prose has apostrophes in it.
+CSS_WITH_APOSTROPHE_IN_COMMENT = """
+/* ---- generated ---- */
+:root { --accent: #4dff9e; }
+
+/* ============================================================
+   Xtravu — shared stylesheet
+   Concept: dark control-room / bank of live monitors,
+   one signal-green accent showing what's live.
+   ============================================================ */
+
+.btn-primary {
+  background: var(--accent);
+}
+.hero-title {
+  font-size: 3rem;
+}
+"""
+
+
+def test_a_comment_apostrophe_does_not_swallow_the_rest_of_the_stylesheet():
+    """The bug that silently disabled style edits on 3 of 15 live sites.
+
+    An apostrophe inside a comment was read as the start of a CSS string. Nothing closed
+    it, so on one real sheet the scanner found 3 rules in a file of 115 and every edit to
+    anything below that comment was applied, failed verification, and was dropped. The
+    owner was told their change could not be made, three times in a row, for a button that
+    was perfectly editable.
+
+    `effective_styles` strips comments before scanning so the planner never saw it; only
+    the executor, which has to preserve byte offsets, walked into it.
+    """
+    from worker.codegen.css_values import iter_rule_spans
+
+    preludes = [span.prelude for span in iter_rule_spans(CSS_WITH_APOSTROPHE_IN_COMMENT)]
+    assert ".btn-primary" in preludes
+    assert ".hero-title" in preludes, "rules after the comment were invisible"
+
+
+def test_offsets_still_point_into_the_original_text():
+    """Comments are skipped, never stripped. Callers splice edits back in by these
+    offsets, and stripping would shift every one of them -- turning a silent no-op into a
+    corrupted stylesheet, which is worse."""
+    from worker.codegen.css_values import iter_rule_spans
+
+    css = CSS_WITH_APOSTROPHE_IN_COMMENT
+    for span in iter_rule_spans(css):
+        assert css[span.body_start:span.body_end] == span.body
+
+
+def test_a_real_string_still_ends_at_its_closing_quote():
+    """The fix must not go so far that quoted content stops being quoted -- a brace
+    inside a string would then be counted and throw the depth tracking off."""
+    from worker.codegen.css_values import iter_rule_spans
+
+    css = '.a { content: "} not a rule {"; color: red; }\n.b { color: blue; }\n'
+    preludes = [span.prelude for span in iter_rule_spans(css)]
+    assert preludes == [".a", ".b"]
+
+
+def test_an_unterminated_quote_costs_one_line_not_the_whole_file():
+    """A malformed sheet should degrade, not disappear. A CSS string cannot contain a raw
+    newline, so the line break ends it and the rules below stay reachable."""
+    from worker.codegen.css_values import iter_rule_spans
+
+    css = ".a { font-family: 'Unclosed; }\n.b { color: blue; }\n.c { color: red; }\n"
+    preludes = [span.prelude for span in iter_rule_spans(css)]
+    assert ".b" in preludes and ".c" in preludes

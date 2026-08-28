@@ -309,6 +309,51 @@ def _esc(value) -> str:
 URL_MARKER = "<!--seo:url-->"
 
 
+# Google truncates a search snippet around 160 characters, which is why the prompt asks for
+# 140-160. Asked for a range with a hard ceiling, a model writes right up to the ceiling and
+# stops -- observed live on xtravu.pages.dev, whose description ended "Trusted by Pizza Hut,
+# McDonald" at exactly 160 characters, cut inside the word. A snippet that breaks mid-word
+# reads as a broken site in the one place a searcher sees before deciding to click.
+#
+# So the ceiling is enforced here rather than hoped for in the prompt, and enforced on a
+# word boundary: the last whole word that fits wins, and a dangling connective goes with it.
+#
+# 155 rather than 160 on purpose. 160 is roughly where Google cuts, so a description
+# written to exactly 160 is already at the edge -- and a model told "up to 160" writes 160.
+# Enforcing a limit below the one the prompt discusses is what makes this guard bite on the
+# real failure instead of waving it through at exactly the cap.
+DESCRIPTION_MAX_CHARS = 155
+# Ending on one of these reads as a sentence cut short even when the word itself is whole.
+_DANGLING_WORDS = frozenset({
+    "and", "or", "but", "with", "for", "to", "of", "in", "on", "at", "by", "from",
+    "the", "a", "an", "as", "if", "so", "that", "than", "then", "plus", "including",
+})
+_TRAILING_PUNCT = " ,;:-–—/&"
+
+
+def tidy_description(description: str, limit: int = DESCRIPTION_MAX_CHARS) -> str:
+    """Trim to `limit` without ever cutting a word in half, and never end mid-thought.
+
+    Two separate jobs, and the dangling-word pass runs whether or not anything was trimmed:
+    a description already within the limit can still end on "and", which reads as a
+    sentence cut short even though every word in it is whole.
+    """
+    words = " ".join((description or "").split()).split(" ")
+
+    if len(" ".join(words)) > limit:
+        kept: list[str] = []
+        for word in words:
+            candidate = " ".join(kept + [word])
+            if len(candidate) > limit:
+                break
+            kept.append(word)
+        words = kept
+
+    while words and words[-1].strip(_TRAILING_PUNCT).lower() in _DANGLING_WORDS:
+        words.pop()
+    return " ".join(words).rstrip(_TRAILING_PUNCT)
+
+
 def head_tags(spec: dict, filename: str, title: str, description: str,
               site_url: str | None = None) -> str:
     """The SEO half of <head>: what to index, how to share, and what the business is."""

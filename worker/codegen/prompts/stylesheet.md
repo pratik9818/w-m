@@ -49,10 +49,37 @@ same site every other small business has.
   blank without JavaScript.
 - Honour `@media (prefers-reduced-motion: reduce)` by cutting transitions and animations
   down to nothing.
-- Fully responsive using CSS only — flexbox and grid plus media queries. Include **at least
-  three media queries** covering large, tablet, and mobile widths, collapsing multi-column
-  layouts to single column on narrow screens. The nav must stay usable on mobile without any
-  JavaScript (wrapping or stacking is fine).
+- Fully responsive using CSS only — flexbox and grid plus media queries. The nav must stay
+  usable on mobile without any JavaScript (wrapping or stacking is fine).
+
+  Write for these five widths by name. "Three media queries covering large, tablet and
+  mobile" was too vague: it produced stylesheets whose largest breakpoint was 1024px, so
+  every real laptop and monitor fell through into untested territory and owners reported
+  sites that were fine on a phone and inconsistent on a laptop.
+
+  | Width | What it is | What the layout must do |
+  |---|---|---|
+  | 390px | a phone | Single column throughout. Nothing side by side. |
+  | 768px | a tablet | Two columns at most. |
+  | 1024px | a small laptop | Two or three columns. This is **not** your largest size. |
+  | 1280px | a laptop | The full design. |
+  | 1920px+ | a desktop monitor | Still the full design, centred, not stretched. |
+
+  Two absolute rules:
+
+  - **Nothing may cause sideways scrolling at any width from 320px to 2560px.** The build
+    measures this at five widths and fails if the page scrolls sideways at any of them.
+    The usual causes are a fixed `width` or `min-width` in px on a layout element, a grid
+    with a fixed column count, a negative margin, or an element set wider than 100%.
+  - **Cap the content, not the design.** Give `.container` a `max-width` and centre it, so a
+    2560px monitor shows a readable column rather than text stretched across the screen.
+    Every full-width band (`.hero`, `.section-alt`, `.cta-band`, `.site-footer`) keeps its
+    background edge to edge and puts a `.container` inside for its content — so the colour
+    spans the screen and the words do not.
+
+  Prefer rules that need no breakpoint at all: `repeat(auto-fit, minmax(240px, 1fr))` for
+  grids, `clamp()` for type and spacing, `%`/`fr`/`ch` over fixed pixels. A layout that
+  reflows on its own is right at every width, including the ones nobody tested.
 - On any accent-coloured background (`cta-band`, `btn-primary`, a hero that uses the accent),
   the text colour must be the accent-ink value from the direction above — it is the one that
   is guaranteed readable there.

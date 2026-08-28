@@ -191,6 +191,60 @@ async def test_research_failing_never_fails_the_build(monkeypatch):
     assert await research.gather_facts("anything") == ("", None)
 
 
+# ------------------------------------------------- searching for the business itself
+#
+# A brand-new business has no web presence, so a search naming it returns nothing. It
+# happened live: "Xtravu digital signage SaaS platform" cost 25,117 input tokens and came
+# back with facts_chars=0 -- 32% of that whole build, spent on an empty result.
+
+@pytest.mark.asyncio
+async def test_a_search_for_the_business_itself_never_runs(monkeypatch):
+    seen = _stub_calls(monkeypatch, ["SEARCH: Xtravu digital signage SaaS platform"])
+    facts, usage = await research.gather_facts(
+        'Build a website for "Xtravu". Category: digital signage SaaS platform.',
+        subject="Xtravu",
+    )
+
+    assert facts == ""
+    # The expensive half never happened: one call made, and it did not search.
+    assert len(seen) == 1 and seen[0]["online"] is False
+    assert usage["requests"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_genuine_lookup_still_runs_when_a_subject_is_given(monkeypatch):
+    seen = _stub_calls(
+        monkeypatch,
+        ["SEARCH: largest cryptocurrencies by market cap", "- Bitcoin (BTC)"],
+    )
+    facts, _ = await research.gather_facts(
+        "Add the other coins", subject="NovaToken"
+    )
+
+    # The query names the market, not the business, so the guard must not touch it.
+    assert [c["online"] for c in seen] == [False, True]
+    assert "- Bitcoin (BTC)" in facts
+
+
+def test_a_name_made_only_of_filler_does_not_block_every_query():
+    """"The Studio Company" shares words with half the queries worth running, so a name
+    with nothing distinctive left in it must not become a blanket veto."""
+    assert research._is_self_search("Xtravu pricing", "Xtravu") is True
+    assert research._is_self_search("studio lighting regulations", "The Studio Company") is False
+    assert research._is_self_search("anything at all", None) is False
+
+
+@pytest.mark.asyncio
+async def test_a_build_passes_the_business_name_as_the_subject(monkeypatch):
+    """The guard is only reachable if facts_for_build actually hands the name over."""
+    seen = _stub_calls(monkeypatch, ["SEARCH: Rise and Crumb bakery Leeds"])
+    facts, _ = await research.facts_for_build(
+        {"name": "Rise & Crumb", "category": "Bakery"}
+    )
+    assert facts == ""
+    assert len(seen) == 1
+
+
 @pytest.mark.asyncio
 async def test_the_query_is_found_even_when_the_model_narrates_first(monkeypatch):
     # Small models narrate before answering despite being told not to.

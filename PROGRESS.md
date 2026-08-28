@@ -443,3 +443,4 @@ word:
 | 72 | Offline wiring tests for the brief (`tests/test_build_wiring.py`) | ✅ done |
 | 73 | Rebuild a real site and compare the result before/after | ⬜ blocked on the daily request cap |
 | 74 | Consider the stronger model for the stylesheet call only | ⬜ not done |
+| 75 | Web Analytics: beacon on every deployed page (migration `0010`), plain-English visitor questions, `/traffic` | ✅ done (needs the Cloudflare token widened) |

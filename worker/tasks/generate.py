@@ -25,6 +25,7 @@ from worker.codegen.style_ops import StyleAlreadySet, StyleOpFailed, apply_style
 from worker.codegen.validate import failed as failed_checks
 from worker.codegen.validate import validate_files
 from worker.codegen.quota import FREE_TIER_TOKEN_LIMIT, QuotaExceeded, get_tokens_used
+from worker.tasks.web_analytics import strip_beacon
 from worker.tasks.deploy import CloudflareDeployError, deploy_to_cloudflare_pages
 from worker.tasks.notify import notify_owner_failure, notify_owner_progress, notify_owner_success
 from worker.tasks.sandbox import sandbox_test
@@ -221,7 +222,12 @@ async def run_generation_pipeline(
         # An edit is measured against what it replaces: both versions are served in the
         # same sandbox and photographed, so "did this change anything?" stops being a
         # question about bytes and becomes one about pixels.
-        compare_against = live_files if trigger == "edit" else None
+        # Strip the analytics beacon before anything is tested. It is added at deploy and
+        # cannot reach Cloudflare from inside the sandbox, so leaving it in made every
+        # page log a failed request, failed `no_console_errors`, and commissioned a
+        # four-page repair for a script that was never broken. Deploy puts it back.
+        files = strip_beacon(files)
+        compare_against = strip_beacon(live_files) if trigger == "edit" else None
         style_only = _is_stylesheet_only(patch)
         try:
             report = await sandbox_test(
@@ -360,6 +366,7 @@ CHECK_EXPLANATIONS = {
     "images_resolve": "an image on the page couldn't be loaded",
     "page_loads": "one of the pages didn't open properly",
     "page_visibly_changed": "the new version looked exactly like the current one",
+    "fits_every_screen": "a page didn't fit the screen on phones or laptops",
 }
 
 

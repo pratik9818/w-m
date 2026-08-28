@@ -268,3 +268,61 @@ def test_a_correction_keeps_what_the_owner_already_said():
         "the brief must be kept when moving to the confirmation, or a correction is "
         "parsed on its own with everything the owner already said thrown away"
     )
+
+
+# ------------------------------------------------- a correction is a change, not a redo
+#
+# A real owner replied "add price section" to the summary and got back a whole new
+# description of their business -- different tagline, different about, different category.
+# Nothing had gone wrong technically: any non-yes re-ran the parse over the full history
+# and regenerated every field. To the owner it read as the bot forgetting the conversation.
+
+def test_a_correction_is_parsed_against_the_brief_already_shown():
+    source = inspect.getsource(onboarding_handler.on_brief)
+    assert "current=current" in source, (
+        "the correction must be parsed as a change to the brief the owner already read, "
+        "not as a fresh description"
+    )
+
+
+def test_the_correction_prompt_forbids_rewording_untouched_fields():
+    from bot_api.services import onboarding_ai
+
+    rendered = onboarding_ai._render_current({"name": "Rise & Crumb", "tagline": "x"})
+    assert "CORRECTION" in rendered
+    for field in ("tagline", "about", "category"):
+        assert field in rendered, f"{field} must be named as one to carry through unchanged"
+
+    # No previous brief means a first pass, which must stay exactly as it was.
+    assert onboarding_ai._render_current(None) == ""
+    assert onboarding_ai._render_current({}) == ""
+
+
+def test_the_summary_marks_what_the_correction_actually_changed():
+    """Re-reading an unmarked summary means diffing two walls of text by eye to find out
+    whether the one thing you asked for landed."""
+    before = {"name": "Rise & Crumb", "category": "Bakery", "tagline": "Stone-baked"}
+    after = {"name": "Rise & Crumb", "category": "Cafe", "tagline": "Stone-baked"}
+
+    summary = onboarding_handler._brief_summary(after, previous=before)
+    marked = [line for line in summary.splitlines() if "updated" in line]
+
+    assert len(marked) == 1, "exactly the changed line is marked"
+    assert "Cafe" in marked[0]
+    assert "Stone-baked" not in marked[0], "an untouched field must not be marked"
+
+
+def test_a_correction_that_changed_nothing_says_so():
+    """Silently returning an identical summary leaves the owner unable to tell whether
+    their message was read at all."""
+    brief = {"name": "Rise & Crumb", "category": "Bakery"}
+    summary = onboarding_handler._brief_summary(brief, previous=dict(brief))
+
+    assert "didn't change anything" in summary
+    assert "updated" not in summary
+
+
+def test_the_first_summary_is_unmarked():
+    """Nothing to compare against on the first pass, so nothing may be marked."""
+    summary = onboarding_handler._brief_summary({"name": "Raj Plumbing", "category": "Plumber"})
+    assert "updated" not in summary

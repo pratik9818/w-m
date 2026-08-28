@@ -135,7 +135,9 @@ CAPABILITIES = (
     "• <i>\"change my phone number to 0113 496 0000\"</i>\n"
     "• <i>\"make the heading bigger\"</i> or <i>\"use green buttons\"</i>\n"
     "• <i>\"add a picture at the top\"</i> — send me one, or I'll find one\n"
-    "• <i>\"what's my link?\"</i> or <i>\"how much have I used?\"</i>\n\n"
+    "• <i>\"what's my link?\"</i> or <i>\"how much have I used?\"</i>\n"
+    "• <i>\"how many people visited today?\"</i> — I count them for you\n"
+    "• <i>\"where did they come from?\"</i> — Google, Facebook, or a link you sent\n\n"
     "You never need to know anything about websites. Just say it how you'd say it to a "
     "person, and ask me if you're not sure — that's what I'm here for."
 )
@@ -248,6 +250,10 @@ never need to. They know how to ask a question. Treat every question as a reason
 - Change anything on a site they already have: wording, colours, sizes, photos, phone
   number, opening hours, services, how many pages it has.
 - Show them their link, tell them what they have spent, undo the last change.
+- Tell them how many people visited their site and when, and where those visitors came
+  from -- Google, Facebook, or a link they sent out themselves. If they ask about visitors
+  and no numbers appear above, say you will check and ask them to put it as a question
+  like "how many visits this week?" -- never guess a visitor count.
 - Explain anything about their website in plain language.
 
 ## Their message

@@ -15,6 +15,7 @@ HELP_TEXT = (
     "/newsite — build a new website: just describe it in one message\n"
     "/mysites — see and switch between your sites\n"
     "/status — check whether your site is live, building, or had a problem\n"
+    "/traffic — see how many people visited and where they found you\n"
     "/token — see how many more websites and changes you can make\n"
     "/undo — put your site back to how it was before the last change\n"
     "/delete — permanently delete a site and take it offline\n"
@@ -22,6 +23,8 @@ HELP_TEXT = (
     "Once a site is live, just send me a message like \"change my hours to 9-6\" "
     "to update it — no need for a command. I only change the part you mention; the rest "
     "of your site stays exactly as it is.\n\n"
+    "You can ask me about your visitors the same way — \"how many visits today?\", "
+    "\"did anyone look at it yesterday?\", \"where are these people coming from?\"\n\n"
     "📷 You can also send me a photo any time and I'll ask where you'd like it on your site."
 )
 

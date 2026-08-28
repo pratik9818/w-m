@@ -7,6 +7,8 @@ that answer then got rendered on their live site as opening hours.
 Same content rules as everywhere else: descriptive copy may be composed, but a phone
 number, price, address or opening time is only ever recorded if the owner actually said it.
 """
+import json
+
 from bot_api.services.llm_client import (
     DailyLimitReached,
     LLMCallFailed,
@@ -15,7 +17,7 @@ from bot_api.services.llm_client import (
 
 PROMPT_TEMPLATE = """A business owner wants a website. They described it in their own words below. Turn that into a structured site brief by calling exactly one of the available functions.
 
-{context_section}Owner's message:
+{context_section}{current_section}Owner's message:
 {raw_message}
 
 ## Rules
@@ -100,12 +102,49 @@ def _render_context(previous: list[str] | None) -> str:
     )
 
 
+# Fields the owner has already read back and approved by not objecting to them. A
+# correction about one thing must not quietly reword the rest.
+_STABLE_FIELDS = ("name", "category", "tagline", "about", "theme", "layout")
+
+
+def _render_current(current: dict | None) -> str:
+    """The brief already shown to the owner, when this message is a correction to it.
+
+    Without this the correction path was a *fresh parse*: the owner replied "add price
+    section" to the read-back summary, the whole brief was regenerated from history, and
+    they got back a different tagline, a different about and a different category with no
+    explanation. They had asked for one addition and received a new description of their
+    business -- which reads exactly like the bot having forgotten the conversation.
+    """
+    if not current:
+        return ""
+    shown = {k: v for k, v in current.items() if k != "operation" and v}
+    return (
+        "## The brief you already gave them\n\n"
+        "You produced this and they have read it. Their message below is a CORRECTION to "
+        "it, not a new description:\n\n"
+        f"```json\n{json.dumps(shown, indent=2, ensure_ascii=False)}\n```\n\n"
+        "Call create_site again with this same brief, changing only what their message "
+        f"actually asks you to change. Do not reword {', '.join(_STABLE_FIELDS)} unless "
+        "the correction is about that field -- copy those through exactly as they are "
+        "above. Keep every service they did not mention.\n\n"
+    )
+
+
 async def parse_business_brief(
-    raw_message: str, previous: list[str] | None = None
+    raw_message: str,
+    previous: list[str] | None = None,
+    current: dict | None = None,
 ) -> tuple[dict, dict]:
-    """Return ({"operation": name, **args}, usage) for one described business."""
+    """Return ({"operation": name, **args}, usage) for one described business.
+
+    `current` is the brief already read back to the owner. Passing it turns this from a
+    fresh parse into a correction applied to that brief -- see `_render_current`.
+    """
     prompt = PROMPT_TEMPLATE.format(
-        raw_message=raw_message, context_section=_render_context(previous)
+        raw_message=raw_message,
+        context_section=_render_context(previous),
+        current_section=_render_current(current),
     )
     try:
         return await call_forced_tool(prompt, TOOLS)

@@ -33,6 +33,15 @@ class Business(Base):
     )
     deployment_url: Mapped[str | None] = mapped_column(String(255))
     cf_pages_project_name: Mapped[str | None] = mapped_column(String(120))
+    # Cloudflare Web Analytics. Issued once per hostname on the first deploy and never
+    # changed after: site_tag reads the numbers back, site_token goes in the page. Null on
+    # sites deployed before this existed, and on any site whose provisioning failed --
+    # analytics is never allowed to be the reason a deploy does not happen.
+    cf_rum_site_tag: Mapped[str | None] = mapped_column(String(64))
+    cf_rum_site_token: Mapped[str | None] = mapped_column(String(64))
+    # When counting actually started, so "no visits last month" can be told apart from
+    # "nothing was watching last month".
+    analytics_enabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Durable design preferences only ("always use a green navbar"), applied on a full
     # build or an explicit rebuild. NOT a per-edit channel -- element-level changes are
     # one-shot patches against the stored files instead, so they can't be replayed and

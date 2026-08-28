@@ -6,6 +6,7 @@ from aiogram.fsm.state import default_state
 from aiogram.types import Message
 
 from bot_api.bot.filters import is_affirmation
+from bot_api.services.analytics import looks_like_a_traffic_question, traffic_reply
 from bot_api.services.assistant import (
     answer_from_facts,
     answer_or_fallback,
@@ -24,6 +25,7 @@ from bot_api.services.edit_ops import (
     is_business_busy,
     is_structural_request,
     layout_answer,
+    coerce_targets,
     normalize_patch_targets,
     patch_for_extra_instructions,
     patch_for_field_edit,
@@ -31,6 +33,7 @@ from bot_api.services.edit_ops import (
     picture_source_answer,
     wants_a_picture,
     widen_targets_for_pictures,
+    widen_targets_for_pricing,
 )
 from bot_api.services.edit_intent import (
     EditNotUnderstood,
@@ -38,6 +41,7 @@ from bot_api.services.edit_intent import (
     understand_edit,
 )
 from bot_api.services.nl_edit import EditParseFailed, parse_edit_message
+from worker.learning.lessons import lessons_for, render_lessons
 from bot_api.services.llm_client import DailyLimitReached
 from bot_api.services.queue import enqueue_generation, enqueue_rollback
 from worker.codegen.builder import page_files_for, spec_from_business
@@ -110,9 +114,16 @@ async def _answer_as_assistant(
     active_id = business.id if business is not None else None
     facts = await owner_facts(session, telegram_user_id, businesses, active_id)
 
+    # "How many people visited today?" -- read from Cloudflare, not from a model. Checked
+    # first because the words overlap with everything else an owner asks ("how many", "my
+    # site"), and because it is the one question here whose answer is not already in our
+    # own database.
+    reply = await traffic_reply(business, raw_message)
+
     # The questions asked constantly, each with exactly one right answer. Paying a model to
     # compose "here is your link" would be paying for a worse version of a column lookup.
-    reply = answer_from_facts(raw_message, facts)
+    if reply is None:
+        reply = answer_from_facts(raw_message, facts)
     usage = None
     if reply is None:
         reply, usage = await answer_or_fallback(raw_message, facts, context)
@@ -583,11 +594,11 @@ async def catch_all_edit(message: Message) -> None:
             return
 
         # A question with a stored answer -- "what's my link", "how much have I got left",
-        # "what can you do". Answered here, before the two model calls below, because the
-        # answer is a column and reading the message to discover that is not worth paying
-        # for. Placed after the two answer-shortcuts above so a reply to the bot's own
-        # question is never mistaken for a fresh one.
-        if looks_like_a_question(raw_message):
+        # "what can you do", "how many people visited today". Answered here, before the two
+        # model calls below, because the answer is a lookup and reading the message to
+        # discover that is not worth paying for. Placed after the two answer-shortcuts
+        # above so a reply to the bot's own question is never mistaken for a fresh one.
+        if looks_like_a_question(raw_message) or looks_like_a_traffic_question(raw_message):
             await _answer_as_assistant(
                 message, session, redis, business, telegram_user_id, raw_message,
                 [business], context,
@@ -625,9 +636,15 @@ async def catch_all_edit(message: Message) -> None:
             # while it is still only words.
             await message.answer(describe_for_owner(plan))
 
+        # What has already worked on this site, in this owner's words. One indexed query,
+        # no model call: aiming at the wrong element is the commonest way an edit runs
+        # cleanly and does the wrong thing, and this owner's own history is the best
+        # available answer to which element they mean.
+        lessons = render_lessons(await lessons_for(session, business.id, raw_message))
+
         try:
             op, parse_usage = await parse_edit_message(
-                raw_message, business, context, live_files, plan=plan
+                raw_message, business, context, live_files, plan=plan, lessons=lessons
             )
         except DailyLimitReached:
             # Not a fault the owner can do anything about by retrying in a moment, which
@@ -876,8 +893,14 @@ async def _apply_operation(
 
         if op["operation"] == "patch_site":
             instruction = (op.get("instruction") or "").strip()
+            # Coerced before anything reads it. The widen helpers below concatenate a list
+            # onto it, so a string here is not merely useless -- it raises.
+            widened = widen_targets_for_pictures(instruction, coerce_targets(op.get("targets")))
+            # A pricing section needs the stylesheet too -- no build ever produces one, so
+            # the site's own CSS has never heard of `pricing-grid`.
+            widened = widen_targets_for_pricing(instruction, widened)
             targets = normalize_patch_targets(
-                widen_targets_for_pictures(instruction, op.get("targets") or []),
+                widened,
                 available=list(page_files_for(business.layout)) + ["style.css"],
             )
 

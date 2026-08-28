@@ -11,6 +11,7 @@ from aiogram.filters import Command
 from aiogram.types import Message
 from sqlalchemy import select
 
+from bot_api.services.analytics import not_counting_yet, traffic_reply
 from bot_api.services.business_service import get_business_by_id, list_businesses_for_owner
 from bot_api.services.edit_ops import is_build_stale, is_business_busy
 from bot_api.services.redis_client import get_redis
@@ -132,6 +133,34 @@ async def cmd_token(message: Message) -> None:
     ]
 
     await message.answer("\n".join(lines))
+
+
+@router.message(Command("traffic"))
+async def cmd_traffic(message: Message) -> None:
+    """The full visitor report for the active site.
+
+    Kept deliberately thin, because almost nobody arrives here: owners ask "how many people
+    came today?" in the chat, which the edit handler answers with the same module. This
+    exists for the minority who like commands and for /help to have something to point at.
+
+    Any text after the command is treated as the period, so "/traffic last month" works the
+    same way the sentence would.
+    """
+    business = await _resolve_active(message.from_user.id)
+    if business is None:
+        async with session_scope() as session:
+            owned = await list_businesses_for_owner(session, message.from_user.id)
+        if not owned:
+            await message.answer(not_counting_yet("", has_site=False))
+            return
+        await message.answer(
+            "Which site's visitors did you want? Use /mysites to pick one first."
+        )
+        return
+
+    period = (message.text or "").partition(" ")[2].strip()
+    reply = await traffic_reply(business, period, full_report=True)
+    await message.answer(reply)
 
 
 @router.message(Command("undo"))

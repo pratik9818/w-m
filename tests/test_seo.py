@@ -17,7 +17,17 @@ import re
 
 import pytest
 
-from worker.codegen import shell
+from worker.codegen import seo, shell
+
+# The art direction a page is assembled with. Nothing here affects the description; it is
+# required only because `_assemble_page` renders a whole page.
+_BRIEF = {
+    "display_font": "Bebas Neue", "display_stack": "sans-serif",
+    "body_font": "Inter", "body_stack": "sans-serif",
+    "accent": "#ff0066", "accent_ink": "#ffffff", "theme_mood": "bold",
+    "signature": "hard edges", "palette": {}, "neutral": "#111111",
+}
+
 from worker.codegen.seo import (
     URL_MARKER,
     crawl_files,
@@ -391,6 +401,11 @@ async def test_a_first_deploy_uploads_pages_that_know_their_own_address(monkeypa
     class NewBusiness:
         slug = "rise-and-crumb"
         cf_pages_project_name = None
+        # A site that has never been deployed has no analytics identity yet; deploy reads
+        # these to decide whether to provision one.
+        cf_rum_site_tag = None
+        cf_rum_site_token = None
+        analytics_enabled_at = None
 
     built = {"index.html": f"<head>{URL_MARKER}</head>", "style.css": "body{}"}
     project, url, deployed = await deploy_module.deploy_to_cloudflare_pages(NewBusiness(), built)
@@ -441,5 +456,71 @@ def test_the_prompt_asks_for_a_title_someone_would_click():
     assert "town" in prompt.lower() and "city" in prompt.lower()
     # The counter-example matters as much as the rule.
     assert "Sourdough Bakery in Leeds | Rise & Crumb" in prompt
-    assert "140–160 characters" in prompt
     assert "never invent a town" in prompt.lower()
+    # A range with a hard ceiling got written right up to the ceiling and cut mid-word, so
+    # the prompt now says which end of the range matters.
+    assert "ceiling, not a target" in prompt
+    assert f"never exceed {seo.DESCRIPTION_MAX_CHARS}" in prompt, (
+        "the number the model is given and the number the code enforces must not drift"
+    )
+
+
+# --------------------------------------------------- the description a searcher sees
+
+def test_a_description_that_fits_is_left_exactly_as_written():
+    """The common case must cost nothing and must not reword good copy."""
+    text = "Blocked drain or burst pipe? Rivera Plumbing covers Riverside, same day."
+    assert seo.tidy_description(text) == text
+
+
+def test_the_live_truncation_is_repaired():
+    """The real one, from xtravu.pages.dev: exactly 160 characters, ending inside the word
+    "McDonald's". This is what a searcher saw before deciding whether to click."""
+    broken = (
+        "Xtravu puts every screen in your network on one dashboard. Schedule content, "
+        "build layouts, and manage Android displays anywhere. Trusted by Pizza Hut, McDonald"
+    )
+    assert len(broken) == 160
+
+    fixed = seo.tidy_description(broken)
+    assert len(fixed) <= seo.DESCRIPTION_MAX_CHARS
+    assert not fixed.endswith("McDonald"), "the half-written brand name must be gone"
+    assert fixed.endswith("Trusted by Pizza Hut"), "everything whole is kept"
+
+
+def test_a_dangling_connective_goes_with_the_word_it_introduced():
+    """Stopping on "and" reads as a cut-off sentence even though the word is complete."""
+    text = "We fit kitchens, bathrooms and lofts across the whole of Greater Manchester and"
+    assert seo.tidy_description(text, limit=len(text)).endswith("Greater Manchester")
+
+
+def test_trimming_never_splits_a_word():
+    long_text = "Riverside plumbing specialists " * 20
+    fixed = seo.tidy_description(long_text)
+    assert len(fixed) <= seo.DESCRIPTION_MAX_CHARS
+    # Every word in the result is a whole word from the original.
+    assert set(fixed.split()) <= set(long_text.split())
+
+
+def test_an_empty_description_stays_empty_rather_than_failing():
+    assert seo.tidy_description("") == ""
+    assert seo.tidy_description(None) == ""
+
+
+def test_the_page_that_gets_built_carries_the_tidied_description():
+    """Fixing the helper is no use if the builder never calls it -- and the meta tag,
+    og:description and twitter:description all read from the same string."""
+    from worker.codegen import builder
+
+    broken = "x" * 40 + " " + "word " * 40
+    fragment = (
+        f"<title>A Page</title>\n"
+        f'<meta name="description" content="{broken}">\n'
+        f"<main><section class=\"section\"><p>Body copy.</p></section></main>"
+    )
+    page = builder._assemble_page(
+        {"name": "Test Co", "category": "Plumber"}, "index.html", fragment, _BRIEF
+    )
+    served = re.search(r'name="description" content="([^"]*)"', page).group(1)
+    assert 0 < len(served) <= seo.DESCRIPTION_MAX_CHARS
+    assert page.count(served) >= 2, "og/twitter descriptions carry the same tidied text"
