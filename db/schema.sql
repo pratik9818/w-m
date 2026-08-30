@@ -39,6 +39,8 @@ CREATE TABLE businesses (
   cf_rum_site_tag text,
   cf_rum_site_token text,
   analytics_enabled_at timestamptz,
+  forms               jsonb NOT NULL DEFAULT '{}',        -- enquiry forms this site carries, by name
+  form_key            text UNIQUE,                        -- how a page names itself when it posts an enquiry
   extra_instructions  text,
   plan                text NOT NULL DEFAULT 'free',       -- reserved for future billing phase
   created_at          timestamptz NOT NULL DEFAULT now(),
@@ -118,3 +120,19 @@ CREATE INDEX idx_token_usage_owner ON token_usage(owner_telegram_id);
 
 -- Storage: create a public-read bucket named `business-media` via the Supabase
 -- dashboard (Storage -> New bucket -> Public bucket) for logos/photos.
+
+-- Enquiries sent from a generated site's form. Written by the Supabase edge function in
+-- supabase/functions/site-form/, which is the only thing that can reach a visitor's
+-- browser: the sites are static and the bot has no public address. Read back by
+-- bot_api/services/form_data.py when the owner asks what has come in.
+CREATE TABLE form_submissions (
+  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  business_id  uuid NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+  form_name    text NOT NULL DEFAULT 'contact',
+  page         text,
+  payload      jsonb NOT NULL DEFAULT '{}',   -- the fields as submitted; the owner chooses them
+  submitted_at timestamptz NOT NULL DEFAULT now(),
+  notified_at  timestamptz                    -- when the owner was told, not when it arrived
+);
+CREATE INDEX idx_form_submissions_business_time
+  ON form_submissions(business_id, submitted_at DESC);

@@ -1,0 +1,10 @@
+# Cloudflare Pages rewrites. The payment link the bot sends is /pay/<token>, which is a
+# path rather than a query string on purpose: it is what a customer sees in their address
+# bar, and ?t=... reads like something that can be edited.
+#
+# 200 rather than 301: the browser must keep the /pay/<token> URL so the page can read the
+# token back out of it. A redirect would throw the token away before the JavaScript runs.
+/pay/*  /pay.html  200
+
+# Netlify uses this same file and syntax. For Vercel, delete this file and use the
+# vercel.json documented in README.md instead.

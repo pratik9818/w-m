@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Complete your payment</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="brand"><span class="dot"></span><span>Secure payment</span></div>
+
+  <!-- Three states, one of which is always visible. They are all in the markup rather
+       than built in JavaScript so that the first paint is never an empty white screen:
+       on a phone on a shop's wifi, blank reads as broken and the tab gets closed. -->
+
+  <!-- 1. Waiting for the plan details. -->
+  <div class="card skeleton" id="state-loading">
+    <div class="head">
+      <div class="bar short"></div>
+      <div class="bar tall mid"></div>
+    </div>
+    <div class="body">
+      <div class="bar"></div><div class="bar mid"></div><div class="bar short"></div>
+      <div class="bar tall" style="margin-top:22px"></div>
+    </div>
+  </div>
+
+  <!-- 2. The page itself. -->
+  <div class="card" id="state-ready" hidden>
+    <div class="head">
+      <div class="plan" id="plan-name"></div>
+      <div class="price"><span id="price"></span> <span class="per" id="per"></span></div>
+      <div class="blurb" id="blurb"></div>
+    </div>
+    <div class="body">
+      <ul class="perks" id="perks"></ul>
+      <button class="pay" id="pay" type="button">Pay</button>
+      <div class="methods">UPI · <strong>Google Pay</strong> · <strong>PhonePe</strong> · Cards · Net banking</div>
+      <div class="msg" id="msg" role="status" aria-live="polite"></div>
+      <div class="note" id="note"></div>
+    </div>
+  </div>
+
+  <!-- 3. The link is older than an hour, or was never real. -->
+  <div class="card" id="state-expired" hidden>
+    <div class="result">
+      <div class="mark bad">!</div>
+      <h1>This payment link has expired</h1>
+      <p>Payment links last an hour, for safety. Nothing has been charged.</p>
+      <p>Go back to the chat and send <strong>/upgrade</strong> for a fresh one.</p>
+      <a class="back" id="back-expired" href="#" hidden>Back to the chat</a>
+    </div>
+  </div>
+</div>
+
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+<script src="/config.js"></script>
+<script src="/checkout.js"></script>
+</body>
+</html>

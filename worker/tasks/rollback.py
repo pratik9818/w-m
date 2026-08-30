@@ -14,6 +14,7 @@ from sqlalchemy import func, select
 from bot_api.services.business_service import get_business_by_id
 from db.base import session_scope
 from db.models import SiteVersion
+from worker.codegen.forms import apply_forms, form_endpoint
 from worker.tasks.deploy import deploy_to_cloudflare_pages
 from worker.tasks.notify import notify_owner_failure
 
@@ -43,6 +44,15 @@ async def rollback_site(ctx: dict, business_id: str, version_id: str) -> None:
             .where(SiteVersion.business_id == business.id)
         )).scalar_one()) + 1
 
+        # The one thing an undo must not undo. Rolling back to a version from before the
+        # owner added their enquiry form would take the form off the live site while the
+        # business still says it has one -- so the page would quietly stop collecting
+        # enquiries, and nothing anywhere would say so until somebody noticed the silence.
+        # Re-applied rather than skipped, and a no-op for a site with no forms.
+        restored_files = apply_forms(
+            target.files, business.forms, business.form_key, form_endpoint()
+        )
+
         restored = SiteVersion(
             business_id=business.id,
             version_number=next_number,
@@ -50,7 +60,7 @@ async def rollback_site(ctx: dict, business_id: str, version_id: str) -> None:
             status="deploying",
             # Same bytes, recorded again so the history stays truthful about what is live
             # rather than silently repointing at an old row.
-            files=target.files,
+            files=restored_files,
             sandbox_status="passed",
             sandbox_report={"skipped": f"rollback to version {target.version_number}"},
         )
@@ -60,7 +70,7 @@ async def rollback_site(ctx: dict, business_id: str, version_id: str) -> None:
 
         try:
             project_name, live_url, _files = await deploy_to_cloudflare_pages(
-                business, target.files
+                business, restored_files
             )
         except Exception as exc:
             logger.exception("rollback_site: deploy failed for %s", business_id)

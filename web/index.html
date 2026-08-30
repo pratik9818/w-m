@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Payments</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="brand"><span class="dot"></span><span>Secure payment</span></div>
+  <div class="card">
+    <div class="result">
+      <div class="mark bad">!</div>
+      <h1>Nothing to pay for here</h1>
+      <!-- Somebody who types the bare domain in. Not an error, so it does not look like
+           one; it just points them back at the only place a payment link comes from. -->
+      <p>Payment links are sent to you in the chat. Send <strong>/upgrade</strong> there and
+         you will get one.</p>
+      <a class="back" id="back" href="#" hidden>Open the chat</a>
+    </div>
+  </div>
+</div>
+<script src="/config.js"></script>
+<script>
+(function () {
+  var cfg = window.CHECKOUT || {};
+  if (cfg.botUsername) {
+    var back = document.getElementById("back");
+    back.href = "https://t.me/" + encodeURIComponent(cfg.botUsername);
+    back.hidden = false;
+  }
+})();
+</script>
+</body>
+</html>

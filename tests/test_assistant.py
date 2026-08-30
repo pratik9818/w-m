@@ -41,9 +41,11 @@ def _facts(sites=(), used=500_000, limit=4_000_000):
 
 
 LIVE_SITE = {"name": "Rise & Crumb", "url": "https://rise-and-crumb.pages.dev",
-             "status": "live", "layout": "landing", "is_active": True}
+             "status": "live", "layout": "landing", "has_form": True, "enquiries": 7,
+             "is_active": True}
 BUILDING_SITE = {"name": "Raj Plumbing", "url": None, "status": "generating",
-                 "layout": "multipage", "is_active": False}
+                 "layout": "multipage", "has_form": False, "enquiries": 0,
+                 "is_active": False}
 
 
 # --------------------------------------------------- answered without a model call

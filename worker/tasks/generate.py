@@ -21,6 +21,8 @@ from worker.codegen.builder import (
     repair_files,
     spec_from_business,
 )
+from worker.codegen.forms import apply_forms, form_endpoint
+from worker.codegen.policies import apply_policies
 from worker.codegen.style_ops import StyleAlreadySet, StyleOpFailed, apply_style_changes
 from worker.codegen.validate import failed as failed_checks
 from worker.codegen.validate import validate_files
@@ -116,6 +118,21 @@ async def run_generation_pipeline(
                 files, changed = apply_style_changes(live_files, patch["style_changes"])
                 usage = {"model": "", "input_tokens": 0, "output_tokens": 0, "requests": 0}
                 log_event(logger, "style.applied", changes=changed)
+            elif patch and patch.get("form_change") and live_files and trigger != "rebuild":
+                # Nothing here writes anything: the form was already saved on the business
+                # by the chat handler, and the injection step below is what puts it on the
+                # pages. Taking the live files unchanged is what makes adding a form cost
+                # nothing and disturb nothing -- no model sees this site.
+                files = dict(live_files)
+                usage = {"model": "", "input_tokens": 0, "output_tokens": 0, "requests": 0}
+                log_event(logger, "form.applied", form=patch["form_change"])
+            elif patch and patch.get("policy_change") and live_files and trigger != "rebuild":
+                # Same reasoning as the form branch above: the settings were saved on the
+                # business by the chat handler and the injection step below renders the
+                # pages, so no model sees this site and the change costs nothing.
+                files = dict(live_files)
+                usage = {"model": "", "input_tokens": 0, "output_tokens": 0, "requests": 0}
+                log_event(logger, "policies.applied", change=patch["policy_change"])
             elif patch and patch.get("instruction") and live_files and trigger != "rebuild":
                 files, usage = await patch_site_files(
                     live_files,
@@ -182,6 +199,23 @@ async def run_generation_pipeline(
             files=len(files), api_requests=usage.get("requests"),
             tokens=usage["input_tokens"] + usage["output_tokens"], model=usage["model"],
         )
+
+        # The forms this site is defined to have, put onto its pages. Runs on every build
+        # and every patch, not just the one that added a form: a rebuild rewrites all four
+        # pages from scratch, and a form that only existed as markup would vanish there,
+        # silently, taking every future enquiry with it.
+        files = apply_forms(files, business.forms, business.form_key, form_endpoint())
+
+        # And the policy pages, for the same reason and in the same place. These are the
+        # ones a payment provider verified, so a rebuild that dropped them would cost the
+        # owner their ability to take money -- with nothing on the site to show what
+        # changed.
+        files = apply_policies(files, business.policies, {
+            "name": business.name,
+            "email": business.email,
+            "phone": business.phone,
+            "address": business.address,
+        })
 
         # Pre-flight: everything checkable from the markup alone, before a container
         # exists. A build doomed by an empty link now fails (and gets repaired) in
@@ -367,6 +401,7 @@ CHECK_EXPLANATIONS = {
     "page_loads": "one of the pages didn't open properly",
     "page_visibly_changed": "the new version looked exactly like the current one",
     "fits_every_screen": "a page didn't fit the screen on phones or laptops",
+    "works_on_desktop": "a page was laid out for a phone rather than a big screen",
 }
 
 

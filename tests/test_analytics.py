@@ -106,6 +106,42 @@ def test_edits_that_mention_visitors_are_not_mistaken_for_questions(message):
     assert not looks_like_a_traffic_question(message)
 
 
+# The messages below are verbatim from a real conversation, in the order they were sent.
+# The owner asked about traffic, was answered, then asked for an edit and was answered with
+# traffic again -- twice more, including once after saying "I don't want this". Two things
+# let it through: "desktop view" contains "view", and the instruction guard only recognised
+# a message that *opened* with one of about fifteen verbs, of which "center" was not one.
+
+@pytest.mark.parametrize("message", [
+    "Center form in desktop view and please make text color black beauese where i am "
+    "writting it is not visible",
+    "I don't want this I want Center form in desktop view and please make text color black",
+    "make the mobile view better",
+    "fix the tablet view",
+    "also center the logo",
+    "now change the phone number",
+    "i want to add a booking form",
+    "please align the buttons",
+])
+def test_an_edit_is_never_answered_with_a_visitor_chart(message):
+    """The bug this guards against had no error and no way back.
+
+    The owner's words were discarded, the reply looked like a normal answer, and repeating
+    the request produced the same chart again. Nothing in the logs said anything was wrong.
+    """
+    assert not looks_like_a_traffic_question(message)
+
+
+@pytest.mark.parametrize("message", [
+    "how many visitors on mobile view",
+    "how many people viewed the page I added?",
+])
+def test_a_real_question_survives_the_guard(message):
+    """The fix cuts "mobile view" out and lets an imperative anywhere veto the question, so
+    both directions need holding: these still have to reach the visitor numbers."""
+    assert looks_like_a_traffic_question(message)
+
+
 def test_where_from_asks_about_referrers_and_countries_together():
     """"Where do my visitors come from" is two questions in one and the words do not say
     which. Both are answered, because guessing wrong means answering neither."""

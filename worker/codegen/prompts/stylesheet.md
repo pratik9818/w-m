@@ -80,6 +80,26 @@ same site every other small business has.
   Prefer rules that need no breakpoint at all: `repeat(auto-fit, minmax(240px, 1fr))` for
   grids, `clamp()` for type and spacing, `%`/`fr`/`ch` over fixed pixels. A layout that
   reflows on its own is right at every width, including the ones nobody tested.
+
+  **A rule with no breakpoint is a desktop rule.** Everything you write outside a media
+  query applies at 1920px, so "make it work on mobile and add a max-width query" leaves the
+  monitor showing whatever the phone reasoning happened to produce. Three things follow,
+  and the build now measures the first two at 1440px and 1920px and fails on them:
+
+  - **A button or badge is as wide as its words, never as wide as its column.** `.btn`,
+    `.badge`, `.pill`, `.tag` and `.eyebrow` stay `inline-block`/`inline-flex` with no
+    `width: 100%` and no `display: block` outside a mobile media query. A real site shipped
+    a hero button 1116px wide: correct at 390px, absurd on a monitor. A full-width submit
+    *inside a `<form>`* is fine — the form is already a narrow column.
+  - **A band reaches both screen edges.** `.hero`, `.page-hero`, `.section-alt`,
+    `.cta-band` and the footer never take a `max-width` themselves; the `.container`
+    *inside* them does. The same site capped `.cta-band` at 1180px, so on a 1920 monitor
+    its colour floated in the middle while every other band ran edge to edge.
+  - **Do not leave half the column empty.** A 1180px container holding one left-aligned
+    60ch paragraph is 600px of text and 580px of nothing. Give the wide screen something
+    to do: two columns for text beside an image or a list, `auto-fit` grids for repeated
+    items, or centre a narrow intro under a centred heading. Judge it at 1920px, not at
+    the width the words happen to wrap at.
 - On any accent-coloured background (`cta-band`, `btn-primary`, a hero that uses the accent),
   the text colour must be the accent-ink value from the direction above — it is the one that
   is guaranteed readable there.

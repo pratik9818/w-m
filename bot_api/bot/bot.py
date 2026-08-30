@@ -3,7 +3,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.redis import RedisStorage
 
-from bot_api.bot.handlers import edit, errors, manage, onboarding, photos, sites, start
+from bot_api.bot.handlers import billing, edit, errors, manage, onboarding, photos, sites, start
 from bot_api.config import get_settings
 from bot_api.services.redis_client import get_redis
 
@@ -30,6 +30,7 @@ def get_dispatcher() -> Dispatcher:
         _dispatcher.include_router(start.router)
         _dispatcher.include_router(sites.router)
         _dispatcher.include_router(manage.router)
+        _dispatcher.include_router(billing.router)
         _dispatcher.include_router(photos.router)
         _dispatcher.include_router(onboarding.router)
         _dispatcher.include_router(edit.router)

@@ -7,6 +7,7 @@ from aiogram.types import Message
 
 from bot_api.bot.filters import is_affirmation
 from bot_api.services.analytics import looks_like_a_traffic_question, traffic_reply
+from bot_api.services.form_data import looks_like_a_data_question, submissions_reply
 from bot_api.services.assistant import (
     answer_from_facts,
     answer_or_fallback,
@@ -40,12 +41,24 @@ from bot_api.services.edit_intent import (
     describe_for_owner,
     understand_edit,
 )
+from bot_api.bot.handlers.billing import out_of_changes_keyboard
+from bot_api.services.entitlements import QuotaBlocked, check_change_allowed, consume
 from bot_api.services.nl_edit import EditParseFailed, parse_edit_message
+from bot_api.services.plans import weight_for_operation
 from worker.learning.lessons import lessons_for, render_lessons
 from bot_api.services.llm_client import DailyLimitReached
 from bot_api.services.queue import enqueue_generation, enqueue_rollback
 from worker.codegen.builder import page_files_for, spec_from_business
+from worker.codegen.forms import (
+    FormRejected,
+    build_definition,
+    describe_form,
+    form_endpoint,
+    new_form_key,
+)
 from worker.codegen.photos import find_one_photo
+from worker.codegen.policies import missing_details, today_iso
+from bot_api.services.validation import EMAIL_RE, FIELD_LIMITS
 from worker.codegen.quota import record_usage
 from worker.codegen.style_ops import StyleAlreadySet, StyleOpFailed, apply_style_changes
 from worker.tasks.deploy import delete_pages_project
@@ -114,11 +127,18 @@ async def _answer_as_assistant(
     active_id = business.id if business is not None else None
     facts = await owner_facts(session, telegram_user_id, businesses, active_id)
 
-    # "How many people visited today?" -- read from Cloudflare, not from a model. Checked
-    # first because the words overlap with everything else an owner asks ("how many", "my
-    # site"), and because it is the one question here whose answer is not already in our
-    # own database.
-    reply = await traffic_reply(business, raw_message)
+    # Both of these are looked up rather than composed, and both are checked before
+    # anything else an owner asks, because their words overlap with everything ("how
+    # many", "my site").
+    #
+    # "Give me my site data" -- the enquiries customers actually sent -- goes first. It is
+    # the more specific of the pair, and "how many people contacted me" would otherwise be
+    # answered with a visitor count, which is a different number about different people.
+    reply = await submissions_reply(session, business, raw_message)
+    # "How many people visited today?" -- read from Cloudflare, not from a model, and the
+    # one question here whose answer is not already in our own database.
+    if reply is None:
+        reply = await traffic_reply(business, raw_message)
 
     # The questions asked constantly, each with exactly one right answer. Paying a model to
     # compose "here is your link" would be paying for a worse version of a column lookup.
@@ -225,6 +245,17 @@ def _confirmation_message(op: dict, business_name: str) -> str:
         doing = (op.get("summary") or "").strip() or "update the styling"
     elif operation == "patch_site":
         doing = (op.get("instruction") or "").strip() or "make that change"
+    elif operation == "add_form":
+        # Built from the definition rather than from the model's words, so the question
+        # names the fields that will really be on the page -- the whole reason for asking.
+        doing = f"add {describe_form(op['_form'])}"
+    elif operation == "remove_form":
+        doing = "take the enquiry form off your site"
+    elif operation == "add_policies":
+        doing = ("add your terms, privacy, refund and shipping pages — the four a payment "
+                 "provider checks for")
+    elif operation == "remove_policies":
+        doing = "take the terms, privacy, refund and shipping pages off your site"
     else:
         doing = _spec_change_description(op)
     if doing:
@@ -400,6 +431,41 @@ def _log(business_id, telegram_user_id: int, raw_message: str, *, op: dict | Non
     )
 
 
+def _store_supplied_contact(business, op: dict) -> list[str]:
+    """Save any contact details that came in alongside a policy-pages request.
+
+    The policy pages are refused without an email, a phone number and an address, so the
+    owner is asked for whatever is missing. Their answer then comes back through the same
+    parser, which reads it as another request for policy pages -- correctly, because that
+    is what the conversation is about. Without somewhere for those details to land, the
+    question is asked again, and again.
+
+    Written straight onto the business rather than routed through `update_business_info`,
+    which would save the detail and lose the reason it was given, leaving the owner to ask
+    for the pages a second time.
+    """
+    stored: list[str] = []
+
+    email = str(op.get("email") or "").strip()
+    # A malformed address is worse than none here: it is printed on four pages that a
+    # payment provider then checks, and "contact us at hello@" fails the check.
+    if email and EMAIL_RE.match(email):
+        business.email = email[: FIELD_LIMITS["email"]]
+        stored.append("email")
+
+    phone = str(op.get("phone") or "").strip()
+    if phone:
+        business.phone = phone[: FIELD_LIMITS["phone"]]
+        stored.append("phone")
+
+    address = str(op.get("address") or "").strip()
+    if address:
+        business.address = address[: FIELD_LIMITS["address"]]
+        stored.append("address")
+
+    return stored
+
+
 @router.message(default_state, _is_not_a_command)
 async def catch_all_edit(message: Message) -> None:
     """Lowest-priority handler: any free text from a known owner outside an active
@@ -498,6 +564,10 @@ async def catch_all_edit(message: Message) -> None:
                     business.generation_status = "queued"
                     session.add(_log(business.id, telegram_user_id, raw_message, op=pending, applied=True))
                     await session.commit()
+                    # The deferred half of the rebuild charge. It is taken here, on "yes",
+                    # rather than when the rebuild was proposed -- five changes for a
+                    # question somebody declined would be indefensible.
+                    await consume(session, telegram_user_id, weight_for_operation("rebuild_site"))
                     await push_edit_turn(redis, business.id, raw_message, {"applied": "rebuild_site"})
                     business_id, business_name = business.id, business.name
                     await enqueue_generation(business_id, trigger="rebuild")
@@ -598,7 +668,11 @@ async def catch_all_edit(message: Message) -> None:
         # model calls below, because the answer is a lookup and reading the message to
         # discover that is not worth paying for. Placed after the two answer-shortcuts
         # above so a reply to the bot's own question is never mistaken for a fresh one.
-        if looks_like_a_question(raw_message) or looks_like_a_traffic_question(raw_message):
+        if (
+            looks_like_a_question(raw_message)
+            or looks_like_a_traffic_question(raw_message)
+            or looks_like_a_data_question(raw_message)
+        ):
             await _answer_as_assistant(
                 message, session, redis, business, telegram_user_id, raw_message,
                 [business], context,
@@ -608,6 +682,30 @@ async def catch_all_edit(message: Message) -> None:
         # The parser used to decide what to change without ever seeing the site, so every
         # class name and every "is that already there?" was a guess.
         live_files = await get_live_files(session, business)
+        # The allowance is checked here and nowhere earlier, which is the whole point:
+        # everything above this line -- questions, answers to our own questions, traffic
+        # and enquiry lookups -- is free and stays free even for an owner who has run out.
+        # It is also checked *before* the two model calls below rather than after, because
+        # reading a message costs real money and paying it to say "you have run out" is a
+        # bill that is both small and insulting.
+        try:
+            await check_change_allowed(session, redis, telegram_user_id)
+        except QuotaBlocked as blocked:
+            session.add(_log(business.id, telegram_user_id, raw_message,
+                             error=f"quota: {type(blocked).__name__}"))
+            await session.commit()
+            # Recorded like any other thing the bot says. Without this the refusal is
+            # invisible to the next message: somebody answering "ok, upgrade me then" is
+            # read as a fresh edit request against a site nobody explained they cannot
+            # currently change.
+            await push_edit_turn(redis, business.id, raw_message,
+                                 {"bot_asked": blocked.owner_message})
+            await message.answer(
+                blocked.owner_message,
+                reply_markup=out_of_changes_keyboard() if blocked.offer_upgrade else None,
+            )
+            return
+
         await message.answer("🧠 Got it — thinking about that...")
 
         # Understand the message before choosing an operation for it. This is allowed to
@@ -686,6 +784,21 @@ async def catch_all_edit(message: Message) -> None:
                if understand_usage else 0)
         )
 
+        # Settled now that the operation is known, and not before. A question, a colour
+        # change, or a message that could not be parsed has already returned above having
+        # spent nothing from the allowance -- `weight_for_operation` returns zero for the
+        # first two, and the third never reaches this line.
+        #
+        # `rebuild_site` is the one deferral: it asks before it acts, and charging five
+        # changes here would bill somebody five for saying no. It is charged in the
+        # confirmation branch instead.
+        if op["operation"] != "rebuild_site":
+            await consume(
+                session, telegram_user_id,
+                weight_for_operation(op["operation"]),
+                tokens=parse_tokens,
+            )
+
         if op["operation"] == "not_an_edit":
             session.add(_log(business.id, telegram_user_id, raw_message, op=op))
             await session.commit()
@@ -739,6 +852,107 @@ async def catch_all_edit(message: Message) -> None:
                 'Reply "yes" to publish it, or tell me what to change.'
             )
             return
+
+        # A form is built from a definition, not from the model's prose, so the definition
+        # is made here -- before the owner is asked anything. Two things depend on that:
+        # the confirmation question names the fields that will really be on the page, and
+        # a request that cannot become a form fails now, in one message, rather than after
+        # a yes and a build.
+        if op["operation"] == "add_form":
+            if not form_endpoint():
+                session.add(_log(business.id, telegram_user_id, raw_message, op=op,
+                                 error="no form endpoint configured"))
+                await session.commit()
+                logger.error("edit.form_endpoint_missing",
+                             extra={"event": "edit.form_endpoint_missing"})
+                reply = (
+                    "I can't add a working form to your site at the moment — the part of "
+                    "me that receives the messages isn't set up. Your phone number and "
+                    "email on the page still work, and I'll let you know when forms are "
+                    "available."
+                )
+                await push_edit_turn(redis, business.id, raw_message, {"bot_said": reply})
+                await message.answer(reply)
+                return
+            try:
+                form_name, definition = build_definition(op, business.layout)
+            except FormRejected as exc:
+                session.add(_log(business.id, telegram_user_id, raw_message, op=op,
+                                 error=f"form rejected: {exc}"))
+                await session.commit()
+                question = (
+                    f"I couldn't build that form — {exc}. Tell me which details you'd like "
+                    "customers to fill in (for example: their name, their email and a "
+                    "message) and I'll set it up."
+                )
+                await push_edit_turn(redis, business.id, raw_message, {"bot_asked": question})
+                await message.answer(question)
+                return
+            op["_form_name"], op["_form"] = form_name, definition
+
+        if op["operation"] == "remove_form":
+            existing = business.forms or {}
+            wanted = str(op.get("form") or "").strip().lower()
+            form_name = wanted if wanted in existing else next(iter(existing), None)
+            if form_name is None:
+                session.add(_log(business.id, telegram_user_id, raw_message, op=op,
+                                 error="no form to remove"))
+                await session.commit()
+                reply = (
+                    f"There's no enquiry form on <b>{business.name}</b> to remove — the "
+                    "page shows your contact details rather than a form."
+                )
+                await push_edit_turn(redis, business.id, raw_message, {"bot_said": reply})
+                await message.answer(reply)
+                return
+            op["_form_name"] = form_name
+
+        # Policy pages are only worth publishing if they carry the details a payment
+        # provider looks for. Checked here, before the gate, because four pages that say
+        # "contact us" with no way to do so are rejected exactly as fast as four pages that
+        # do not exist -- and the owner would have paid for the build either way.
+        if op["operation"] == "add_policies":
+            # Contact details usually arrive in the same breath as the request -- either
+            # because the owner included them, or because they are answering the question
+            # below. Saved before the check, never after: without this the answer to "I
+            # need your address" comes back parsed as another request for policy pages,
+            # the address is dropped, the same question is asked again, and the two
+            # messages loop until the owner gives up. That happened.
+            _store_supplied_contact(business, op)
+            absent = missing_details({
+                "email": business.email,
+                "phone": business.phone,
+                "address": business.address,
+            })
+            if absent:
+                session.add(_log(business.id, telegram_user_id, raw_message, op=op,
+                                 error=f"policies missing: {', '.join(absent)}"))
+                await session.commit()
+                wanted = absent[0] if len(absent) == 1 else (
+                    ", ".join(absent[:-1]) + " and " + absent[-1]
+                )
+                question = (
+                    f"I can add those pages — but first I need {wanted}, because a payment "
+                    "provider checks that they're on the site and turns down anyone whose "
+                    "pages don't show them.\n\nJust send them to me in one message, like "
+                    "<i>\"our email is hello@shop.in, phone 98765 43210, address 12 MG "
+                    "Road, Indore 452001\"</i> — then ask me for the policy pages again."
+                )
+                await push_edit_turn(redis, business.id, raw_message, {"bot_asked": question})
+                await message.answer(question)
+                return
+
+        if op["operation"] == "remove_policies":
+            if not (business.policies or {}).get("enabled"):
+                session.add(_log(business.id, telegram_user_id, raw_message, op=op,
+                                 error="no policy pages to remove"))
+                await session.commit()
+                reply = (
+                    f"There are no policy pages on <b>{business.name}</b> to remove."
+                )
+                await push_edit_turn(redis, business.id, raw_message, {"bot_said": reply})
+                await message.answer(reply)
+                return
 
         # ------------------------------------------------------------------ the gate
         #
@@ -815,6 +1029,105 @@ async def _apply_operation(
             await _rebuild_with_layout(
                 message, session, redis, business, telegram_user_id, raw_message, wanted, op=op
             )
+            return
+
+        # A form is a definition on the business, not markup in a file. Stored here and
+        # applied to the pages by the build -- which is what makes it survive a rebuild
+        # that writes every page from scratch, instead of lasting until the next redesign.
+        if op["operation"] in ("add_form", "remove_form"):
+            form_name = op["_form_name"]
+            forms = dict(business.forms or {})
+            if op["operation"] == "add_form":
+                # Issued once, on the first form, and never changed afterwards: it is
+                # printed in the page, so a new one silently orphans every copy of the
+                # site still open in somebody's browser.
+                if not business.form_key:
+                    business.form_key = new_form_key()
+                forms[form_name] = op["_form"]
+                summary = f"add {describe_form(op['_form'])}"
+                reply = (
+                    f"On it — I'm adding your form now.\n\nOnce it's live, every message "
+                    "sent through it lands right here in this chat, straight away. Ask me "
+                    'for <i>"my site data"</i> any time to see them all together.'
+                )
+            else:
+                forms.pop(form_name, None)
+                summary = "remove the enquiry form"
+                reply = (
+                    f"Taking the form off <b>{business.name}</b> now. The enquiries you've "
+                    "already had are kept — just ask for your site data whenever you want "
+                    "them."
+                )
+            business.forms = forms
+
+            entry = _log(business.id, telegram_user_id, raw_message, op=op, applied=True)
+            business.generation_status = "queued"
+            session.add(entry)
+            await session.flush()
+            edit_log_id = str(entry.id)
+            await session.commit()
+            await push_edit_turn(redis, business.id, raw_message,
+                                 {"applied": op["operation"], "summary": summary})
+            await enqueue_generation(
+                business.id, trigger="edit",
+                patch={"form_change": form_name, "summary": summary,
+                       "user_message": raw_message, "edit_log_id": edit_log_id,
+                       "parse_tokens": parse_tokens},
+            )
+            await message.answer(reply)
+            return
+
+        # Policy pages are settings on the business, not markup in a file -- put onto the
+        # site by the build, exactly like a form. That is what makes them survive the
+        # redesign that rewrites every page from scratch, and it matters more here than
+        # anywhere else: losing these quietly means losing a payment gateway approval, and
+        # the owner would find out from a rejection email rather than from their site.
+        if op["operation"] in ("add_policies", "remove_policies"):
+            if op["operation"] == "add_policies":
+                business.policies = {
+                    "enabled": True,
+                    # Left as the model gave it; policies.py is where it is bounded, so the
+                    # clamp lives next to the sentence it ends up in.
+                    "refund_days": op.get("refund_days"),
+                    "legal_name": (op.get("legal_name") or "").strip() or None,
+                    "updated_on": today_iso(),
+                }
+                summary = "add the terms, privacy, refund and shipping pages"
+                reply = (
+                    "On it — I'm adding four pages to your site: <b>Terms &amp; "
+                    "Conditions</b>, <b>Privacy Policy</b>, <b>Cancellation &amp; "
+                    "Refunds</b> and <b>Shipping &amp; Delivery</b>, linked from the "
+                    "bottom of every page.\n\n"
+                    "They use your own email, phone number and address — that's what a "
+                    "payment provider checks for, and pages without them get turned "
+                    "down.\n\n"
+                    "Please read them once they're live. They're the standard wording "
+                    "rather than legal advice, and the refund promise in particular is one "
+                    "you'll have to keep."
+                )
+            else:
+                business.policies = {}
+                summary = "remove the policy pages"
+                reply = (
+                    f"Taking those four pages off <b>{business.name}</b> now. If a payment "
+                    "provider asks for them again, just say so and I'll put them back."
+                )
+
+            entry = _log(business.id, telegram_user_id, raw_message, op=op, applied=True)
+            business.generation_status = "queued"
+            session.add(entry)
+            await session.flush()
+            edit_log_id = str(entry.id)
+            await session.commit()
+            await push_edit_turn(redis, business.id, raw_message,
+                                 {"applied": op["operation"], "summary": summary})
+            await enqueue_generation(
+                business.id, trigger="edit",
+                patch={"policy_change": op["operation"], "summary": summary,
+                       "user_message": raw_message, "edit_log_id": edit_log_id,
+                       "parse_tokens": parse_tokens},
+            )
+            await message.answer(reply)
             return
 
         # A pure style value. It is applied deterministically, so the whole thing can be

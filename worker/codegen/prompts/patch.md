@@ -27,8 +27,13 @@ $owner_words
    it, in which case: put new libraries in `<head>` (this file has its real head, edit it
    directly), guard every selector you use, leave the content visible without JavaScript,
    and produce no console errors — a console error fails the build and the owner's change
-   is lost. `<form>` elements remain the one exception: there is no server to receive a
-   submission.
+   is lost. `<form>` elements remain the one exception: this site can have a real, working
+   enquiry form, but it is built and wired up elsewhere and added to the page afterwards.
+   A form written here would render perfectly and send nothing, losing every message a
+   customer typed into it. Never add one, and never remove or edit a form block that is
+   already in the file — anything between `<!-- form:... -->` and `<!-- /form:... -->`, and
+   the block marked `<!-- form-script -->`, is machine-managed: leave both exactly as they
+   are.
 8. Do not invent facts. Never add a phone number, email, address, price, opening hours,
    testimonial, award, statistic, founding date, or staff name that is not already in the file
    or given explicitly in the request above.

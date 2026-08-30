@@ -42,6 +42,23 @@ class Business(Base):
     # When counting actually started, so "no visits last month" can be told apart from
     # "nothing was watching last month".
     analytics_enabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # The forms this site is meant to carry, keyed by name: {"contact": {"title": ...,
+    # "fields": [...], "page": "contact.html"}}. A definition rather than markup, so a
+    # rebuild that rewrites every page from scratch puts the same form back instead of
+    # losing it. Empty for every site whose owner has not asked for one.
+    forms: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    # How a page identifies itself when it posts an enquiry. Public by necessity -- it
+    # ships inside the page's own script -- and therefore not a secret: it names the site,
+    # it does not prove anything. It exists so a site being spammed can be given a new one
+    # without touching its id, which is in a dozen other places.
+    form_key: Mapped[str | None] = mapped_column(String(64), unique=True)
+    # Whether this site carries the four policy pages a payment gateway checks for, and
+    # the couple of settings that change what they say:
+    # {"enabled": true, "refund_days": 7, "legal_name": ..., "updated_on": "2026-08-30"}.
+    # Settings rather than text -- the prose is rendered by every build from the business's
+    # current contact details, so a page cannot go on promising something the owner has
+    # since changed. Empty for every site whose owner has not asked for them.
+    policies: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     # Durable design preferences only ("always use a green navbar"), applied on a full
     # build or an explicit rebuild. NOT a per-edit channel -- element-level changes are
     # one-shot patches against the stored files instead, so they can't be replayed and

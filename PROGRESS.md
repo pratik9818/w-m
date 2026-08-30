@@ -360,9 +360,40 @@ word:
   4 for a multipage site, 3 for a landing page — so the free tier is ~12 builds a day. The
   \$10 top-up to 1,000/day matters more now than it did.
 
+## Part 9 — Enquiry forms: sites that can be written to (built, not yet live-tested)
+
+Part 4c, unblocked by dropping its original premise. The old plan was `POST /api/{business_id}/contact` on `bot_api`, which has been blocked on a Vercel deployment since Part 1 and would have stayed blocked. A **Supabase edge function** needs no domain of ours, is deployed into the project the data already lives in, and can call the Telegram API itself — so the owner is pinged the moment somebody sends an enquiry, with no polling job anywhere.
+
+Until now every generated site ended the same way: a phone number and an email address. That serves the visitor who is ready to ring a stranger and loses everyone else. Three prompts said so outright ("no `<form>` elements: there is no server to receive a submission"), and all three now say the opposite thing carefully — a form is possible, and the model must never write one.
+
+**The shape of it**
+
+- `alembic/versions/0013_site_forms.py` — `businesses.forms` (jsonb, the definition), `businesses.form_key` (public, rotatable, unique), and the `form_submissions` table. The payload is jsonb because the fields are the owner's to choose: "just a name and a message" and a nine-field intake form are both ordinary requests.
+- `worker/codegen/forms.py` — the markup, the script, the CSS and the injection, all generated from the definition in code. No model call, ever. Same reasoning as `style_ops.py`, but sharper: a form is the one thing on a site where "it looked fine" and "it worked" come apart, and a form that posts nowhere loses every message a customer sends **without leaving a trace anywhere**.
+- `supabase/functions/site-form/index.ts` — receives the POST, checks the honeypot, caps sizes and per-site rates, writes the row, then Telegrams the owner and stamps `notified_at`. Stores first and notifies second on purpose: an enquiry saved and unannounced is recoverable, one announced and lost is not.
+- `bot_api/services/form_data.py` — "give me my site data", answered from the table with no model call, mirroring `analytics.py`. Structured chat text, the owner's own field labels, newest first, with the real total when only the first few are shown.
+- `add_form` / `remove_form` operations in `nl_edit.py`, dispatched in `edit.py` behind the same confirmation gate as everything else, and applied by the pipeline as a **zero-token patch** (`patch={"form_change": ...}` takes the live files unchanged; injection does the rest).
+
+**Decisions worth remembering**
+
+- **The definition lives on the business, not in the page.** `apply_forms` runs on *every* build, ahead of the pre-flight checks, so a rebuild that rewrites all four pages puts the form back. Stored as markup it would have survived exactly until the owner's next redesign, and its disappearance would have been invisible.
+- **Stripping is keyed on the marker, not on the current definitions.** Otherwise a deleted form stays on the page for ever — still posting — with nothing left that knows it is there.
+- **No endpoint configured means no form at all.** `form_endpoint()` returning "" makes `apply_forms` a no-op and the chat handler refuse the request in plain words. Half a form is worse than none.
+- **Forms go on the contact page unless asked otherwise**, and on a landing site every form goes on `index.html` whatever the owner calls the section — honouring "the contact page" literally there writes to a file that does not exist.
+- Fields are optional unless the owner said otherwise; the *edge function* refuses a submission where every box is blank. A required field the visitor cannot supply is a form they abandon, and that rule belongs server-side where it cannot be bypassed.
+- The honeypot is answered with a normal success response. Telling a bot it was detected only teaches whoever wrote it which field to leave alone next time.
+
+**53 offline tests** in `tests/test_forms.py`, including: the injected page stays well-formed and its script parses; the round trip is byte-exact (idempotent, and removal restores the original files including the stylesheet); a moved form leaves no copy behind; the endpoint and key cannot break out of the script literal; and the honeypot name in `forms.py` and in the TypeScript agree — they are two files in two languages checked against one string, and if they disagree every real submission is silently binned as spam.
+
+**Still to do** (needs your Supabase project):
+
+1. Apply migration `0013` and stamp alembic.
+2. Deploy the `site-form` function with **JWT verification off** — a visitor's browser has no Supabase session, and requiring a key would only mean printing one into every page.
+3. `supabase secrets set TELEGRAM_BOT_TOKEN=...` on the project, or enquiries are stored but nobody is told when one arrives.
+4. Real Telegram walkthrough: "add a contact form" → submit from the live site → check the ping arrives → "give me my site data".
+
 ## Not started yet (later parts, per the phased plan)
 
-- **Part 4c — Shared contact-form backend**: `POST /api/{business_id}/contact` on `bot_api`, persists submissions, notifies the owner. Blocked on Part 1's `bot_api` Vercel deployment (needs a real domain for generated sites' `<form action>` to point at).
 - **Part 5 — Hardening + production rollout**: retries, cost controls, logging, rate limiting, full smoke test
 
 ## Task tracker (this session)
@@ -444,3 +475,7 @@ word:
 | 73 | Rebuild a real site and compare the result before/after | ⬜ blocked on the daily request cap |
 | 74 | Consider the stronger model for the stylesheet call only | ⬜ not done |
 | 75 | Web Analytics: beacon on every deployed page (migration `0010`), plain-English visitor questions, `/traffic` | ✅ done (needs the Cloudflare token widened) |
+| 76 | Enquiry forms: schema (`0013`), `forms.py` injector, edge function, `add_form`/`remove_form`, `form_data.py`, `/data` | ✅ done (offline) |
+| 77 | Apply migration `0013` to live Supabase + stamp alembic | ✅ done (`alembic current` → `0013 (head)`) |
+| 78 | Deploy the `site-form` edge function (verify_jwt off) + set `TELEGRAM_BOT_TOKEN` secret | 🟨 function live (v1, jwt off, probed); secret still unset — enquiries store but no instant ping |
+| 79 | Real Telegram walkthrough: add a form, submit from the live site, read the data back | ⬜ not done |

@@ -41,7 +41,19 @@ Creative fields -- tagline, about: if the owner gives a vague or open instructio
 
 Attributed third-party claims -- customer quotes/reviews/testimonials, named awards, specific stats -- NEVER fabricate these under any function, even under the creative-fields allowance above. If the owner asks for a testimonials section (or similar) without giving you a real quote, call clarify and ask for the real quote, or offer to add a general "why customers choose us" section instead that doesn't pretend to quote anyone.
 
-Infeasible requests -- only these are genuinely not possible: online booking or calendars, payments or checkout, live chat, embedded maps or social feeds, customer logins, and a working enquiry form that sends messages (phone and email links work fine instead). If asked for one of these, call clarify, say plainly and in ordinary words what it can't do yet, and suggest the closest thing it can do. Never silently attempt something broken.
+Infeasible requests -- only these are genuinely not possible: online booking or calendars, payments or checkout, live chat, embedded maps or social feeds, and customer logins. If asked for one of these, call clarify, say plainly and in ordinary words what it can't do yet, and suggest the closest thing it can do. Never silently attempt something broken.
+
+## Enquiry forms
+
+An enquiry form IS possible and fully supported -- "add a contact form", "let people message me from the site", "I want a booking enquiry form with their date and party size". Use `add_form` for all of these, never clarify and never patch_site.
+
+The form is built and wired up for the owner automatically. Messages sent through it are stored and arrive in this chat the moment somebody sends one, and the owner can ask for them back at any time ("give me my site data").
+
+- If they don't say which details to ask for, leave `fields` out: the form asks for name, email and message, which is what a contact form means to almost everyone.
+- If they do say ("name, phone and what date they need"), list exactly those, in that order, using their own wording as each field's label. Never add fields they didn't ask for and never drop one they did.
+- Forms go on the contact page unless the owner says otherwise. Only set `page` when they name a different one.
+- **Never write a form yourself in a patch_site instruction.** A form written into the page by hand looks right and posts nowhere, so every message a customer sends is lost silently. `add_form` is the only way one is ever added.
+- Use `remove_form` to take one off the site.
 
 ## Pricing sections
 
@@ -72,6 +84,11 @@ Everything else the owner is likely to ask for IS possible -- including FAQ pane
 - set_style: THE DEFAULT for any change that is purely a style value on something already on the page -- taller, shorter, bigger, smaller, bolder, lighter, a different colour, more or less spacing, centred, rounded corners, a shadow. It edits the one value in place, so it is instant, exact, free, and cannot disturb anything else. Take `selector` and `from` straight from the map above; never invent a class name.
 - patch_site: THE DEFAULT for anything about a specific visible thing on the existing site -- rename or reword a button/heading/label, move an element, remove an element, change where a link points, change a colour. The site is already live and will be edited surgically, so describe the change precisely and completely enough to act on without seeing the chat (e.g. "rename the 'Get started' button to 'Let's build' and point it at https://t.me/teko21bot"), and list the files it affects in `targets`.
 - update_extra_instructions: ONLY for a durable, site-wide design preference the owner wants remembered and reapplied whenever the site is rebuilt from scratch (e.g. "always use a green navbar"). Do NOT use this for a one-off change to something already on the site -- that is patch_site. `mode` is "add" (default) or "clear".
+- add_form: put a working enquiry form on the site, or change the one that is there. Messages sent through it are stored and land in the owner's chat straight away. Leave `fields` out for a plain name/email/message contact form.
+- remove_form: take an enquiry form off the site.
+- add_policies: add the four policy pages a payment provider checks for before it will let a business take money online -- terms and conditions, privacy policy, cancellation and refunds, and shipping and delivery. Use it for "add terms and conditions", "I need a privacy policy", "add the legal pages", "Razorpay is asking for policy pages", "my payment gateway rejected my website". The pages are written and linked automatically from the owner's own contact details, so never write them yourself in a patch_site instruction.
+- remove_policies: take those policy pages back off the site.
+- **These pages need the business's email, phone number and address**, and the bot will refuse to build them without all three. If your previous message asked the owner for a missing detail and THIS message is their answer, that is still `add_policies` -- put what they gave you into its `email`, `phone` and `address` and call it again. Never answer that with `update_business_info`: it saves the detail and forgets what it was for, so the owner has to ask for the pages a second time.
 - change_layout: anything about HOW MANY PAGES the site has -- "keep only one page", "remove the other pages", "make this a landing page", "I want separate pages again". patch_site physically cannot add or delete pages, so never send those requests there.
 - rebuild_site: the owner explicitly wants the whole site redone or redesigned from scratch ("recreate my website", "start over", "redesign the whole thing", "make it look completely different"). This throws away the current design, so only use it when they clearly mean the whole site, never for a single section.
 - clarify: genuinely ambiguous, needs a real fact/quote you don't have, or an infeasible request -- ask a short, specific question or explain the limitation.
@@ -95,7 +112,10 @@ Do not tell the owner something is impossible before checking this list. These a
 - Smooth scrolling to a section, hover effects, animations, transitions, swipeable card rows -- all supported.
 - Any wording, colour, spacing, layout, image or section change -- supported.
 
-Genuinely not possible today, and worth saying plainly (in ordinary words, without naming technologies): a working enquiry form that sends messages, online booking or payments, live chat, embedded maps, and customer logins. For those, say what it can't do yet and suggest showing their phone number or email instead.
+- **A working enquiry form** -- fully supported, and it really sends: use `add_form`.
+- **The policy pages a payment provider demands** (terms, privacy, refunds, shipping) -- fully supported: use `add_policies`. Getting rejected by Razorpay or Cashfree for missing these is common and this fixes it, so never tell an owner it cannot be done.
+
+Genuinely not possible today, and worth saying plainly (in ordinary words, without naming technologies): online booking or payments, live chat, embedded maps, and customer logins. For those, say what it can't do yet and suggest showing their phone number, email or enquiry form instead.
 
 ## Never silently drop part of a request
 
@@ -374,6 +394,90 @@ REMOVE_SERVICE_TOOL = {
     },
 }
 
+ADD_FORM_TOOL = {
+    "name": "add_form",
+    "description": (
+        "Put a working enquiry form on the site, or replace the one already there. The form "
+        "is built and wired up automatically -- messages sent through it are stored and reach "
+        "the owner's chat immediately. Use this for any request to let visitors send a "
+        "message, an enquiry or a booking request from the site. NEVER write a form by hand "
+        "in a patch_site instruction: it would look right and send nothing."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "fields": {
+                "type": "array",
+                "description": "The details to ask the visitor for, in order. LEAVE THIS OUT "
+                "entirely unless the owner named the details they want -- omitted, the form "
+                "asks for name, email and message.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {
+                            "type": "string",
+                            "description": "What the visitor sees above the box, in the "
+                            "owner's own wording, e.g. 'Your name', 'Which date', 'Party size'.",
+                        },
+                        "type": {
+                            "type": "string",
+                            "description": "One of text, email, tel, textarea, number, date. "
+                            "Leave out and it is worked out from the label.",
+                        },
+                        "required": {
+                            "type": "boolean",
+                            "description": "true only if the owner said this one must be "
+                            "filled in. A required field the visitor cannot supply is a form "
+                            "they abandon.",
+                        },
+                    },
+                    "required": ["label"],
+                },
+            },
+            "page": {
+                "type": "string",
+                "description": "Only when the owner names a page other than contact: "
+                "'home', 'about', 'services' or 'contact'.",
+            },
+            "title": {
+                "type": "string",
+                "description": "The heading above the form, e.g. 'Book a table' or 'Send us "
+                "a message'. Write one that suits this business.",
+            },
+            "submit_label": {
+                "type": "string",
+                "description": "What the button says, e.g. 'Send enquiry', 'Request a quote'.",
+            },
+            "success_message": {
+                "type": "string",
+                "description": "What the visitor sees after sending, e.g. 'Thanks - we'll "
+                "come back to you within a day.'",
+            },
+            "form": {
+                "type": "string",
+                "description": "A short name for this form, lowercase, e.g. 'contact' or "
+                "'booking'. Defaults to 'contact'. Use the SAME name to change an existing "
+                "form, and a new one only for a genuinely second form on the site.",
+            },
+        },
+    },
+}
+
+REMOVE_FORM_TOOL = {
+    "name": "remove_form",
+    "description": "Take an enquiry form off the site. Enquiries already received are kept.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "form": {
+                "type": "string",
+                "description": "The form's name, e.g. 'contact'. Leave out if the site has "
+                "only one.",
+            },
+        },
+    },
+}
+
 CLARIFY_TOOL = {
     "name": "clarify",
     "description": "The request is ambiguous or not supported by the other functions -- ask the owner a question instead of guessing.",
@@ -390,6 +494,55 @@ NOT_AN_EDIT_TOOL = {
     "parameters": {"type": "object", "properties": {}},
 }
 
+ADD_POLICIES_TOOL = {
+    "name": "add_policies",
+    "description": (
+        "Add the four policy pages a payment provider requires before it will let a "
+        "business take money online: terms and conditions, privacy policy, cancellation "
+        "and refunds, and shipping and delivery. Use this for any request about policy "
+        "pages, legal pages, terms, privacy, refunds, or being approved by a payment "
+        "provider such as Razorpay, Cashfree, PayU or Stripe. The pages are written and "
+        "linked automatically from the business's own contact details -- NEVER write them "
+        "by hand in a patch_site instruction, because a policy page is a commitment and "
+        "invented wording becomes a promise the owner never made."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "refund_days": {
+                "type": "integer",
+                "description": "How many days a customer has to ask for a full refund. "
+                "ONLY when the owner said a number; left out, it is 7.",
+            },
+            "legal_name": {
+                "type": "string",
+                "description": "The registered business name, ONLY if the owner gave one "
+                "that differs from the name on the site -- e.g. 'Sharma Traders Pvt Ltd' "
+                "for a site called 'Sharma Sweets'. A payment provider compares the two.",
+            },
+            "email": {
+                "type": "string",
+                "description": "The business's email address, if this message contains it.",
+            },
+            "phone": {
+                "type": "string",
+                "description": "The business's phone number, if this message contains it.",
+            },
+            "address": {
+                "type": "string",
+                "description": "The business's full postal address, if this message "
+                "contains it.",
+            },
+        },
+    },
+}
+
+REMOVE_POLICIES_TOOL = {
+    "name": "remove_policies",
+    "description": "Take the terms, privacy, refund and shipping pages back off the site.",
+    "parameters": {"type": "object", "properties": {}},
+}
+
 TOOLS = [
     UPDATE_BUSINESS_INFO_TOOL,
     ADD_SERVICE_TOOL,
@@ -398,6 +551,10 @@ TOOLS = [
     UPDATE_EXTRA_INSTRUCTIONS_TOOL,
     SET_STYLE_TOOL,
     PATCH_SITE_TOOL,
+    ADD_FORM_TOOL,
+    REMOVE_FORM_TOOL,
+    ADD_POLICIES_TOOL,
+    REMOVE_POLICIES_TOOL,
     CHANGE_LAYOUT_TOOL,
     REBUILD_SITE_TOOL,
     CLARIFY_TOOL,
@@ -448,7 +605,19 @@ async def parse_edit_message(
     the database -- the eval harness calls it with no session at all, and must keep being
     able to.
     """
-    spec_json = json.dumps(spec_from_business(business), indent=2, ensure_ascii=False)
+    spec = spec_from_business(business)
+    # Shown to the parser and to nobody else. The same spec feeds the site builder, which
+    # must never see a form definition: it is banned from writing one, and handing it the
+    # shape of the thing it may not write is an invitation to try.
+    if getattr(business, "forms", None):
+        spec["enquiry_forms"] = {
+            name: {
+                "page": form.get("page"),
+                "asks_for": [field["label"] for field in form.get("fields") or []],
+            }
+            for name, form in business.forms.items()
+        }
+    spec_json = json.dumps(spec, indent=2, ensure_ascii=False)
     outline = outline_site(files)
     prompt = PROMPT_TEMPLATE.format(
         spec_json=spec_json,

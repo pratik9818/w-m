@@ -45,6 +45,66 @@ LAYOUT_WIDTHS = (
     (1920, "a desktop monitor"),
 )
 
+# The widths a desktop-only fault actually shows at. Both are machines an owner reported
+# on: the 1920 monitor, and the 1440 laptop that sits just above 1024px -- the largest
+# breakpoint most generated stylesheets bother to write, so everything wider than it
+# inherits rules that were reasoned about for a phone.
+DESKTOP_WIDTHS = ((1440, "a laptop"), (1920, "a desktop monitor"))
+
+# A button or badge sized to its own text is never this wide. 420px clears the longest
+# real label ("Book a consultation today" at a generous size) and sits far below the
+# 1116px slab that prompted this check -- a hero call-to-action stretched edge to edge
+# across the content column because nothing ever told it not to.
+CONTROL_MAX_PX = 420
+
+# A band is full-bleed by definition in the contract: its background runs to both screen
+# edges and a `.container` inside holds the words. One that stops short is unambiguous --
+# it is the one element on the page not touching the edges, and it reads as a floating box.
+BAND_MIN_FRACTION = 0.98
+
+# Both faults are invisible below ~1100px, because at phone width "as wide as the column"
+# is the correct answer for a button and the bands are the full screen anyway. That is why
+# every existing check passes them: they are not wrong until the screen is wide.
+DESKTOP_PROBE = """
+(limits) => {
+  const vw = window.innerWidth;
+  const name = (el) => {
+    const cls = (el.className && el.className.baseVal !== undefined)
+      ? el.className.baseVal : (el.className || '');
+    return (typeof cls === 'string' && cls.trim())
+      ? '.' + cls.trim().split(/\\s+/)[0]
+      : el.tagName.toLowerCase();
+  };
+
+  // Controls that should hug their text. A submit button inside a form is excluded on
+  // purpose: a form is already a narrow column, and a full-width submit in it is a real
+  // design people choose rather than a mistake.
+  const stretched = new Map();
+  const CONTROLS = '.btn, .btn-primary, .btn-secondary, .btn-ghost, .button, button,' +
+                   ' .badge, .pill, .tag, .chip, .eyebrow';
+  for (const el of document.querySelectorAll(CONTROLS)) {
+    if (el.closest('form')) continue;
+    const r = el.getBoundingClientRect();
+    if (r.height <= 0 || r.width <= limits.control) continue;
+    stretched.set(name(el), Math.round(r.width));
+  }
+
+  // Bands whose background should reach both edges.
+  const short = new Map();
+  const BANDS = '.cta-band, .section-alt, .site-footer, .hero, .page-hero';
+  for (const el of document.querySelectorAll(BANDS)) {
+    const r = el.getBoundingClientRect();
+    if (r.height <= 0 || r.width >= vw * limits.band) continue;
+    short.set(name(el), Math.round(r.width));
+  }
+
+  return {
+    stretched: [...stretched].map(([k, w]) => k + ' is ' + w + 'px wide'),
+    short: [...short].map(([k, w]) => k + ' stops at ' + w + 'px of ' + vw + 'px'),
+  };
+}
+"""
+
 # Sideways scroll, plus the widest offending element so a repair has something to aim at.
 # `documentElement.scrollWidth` is the whole rendered page, so this catches an element that
 # pushes the page wide even when nothing visibly hangs off the edge.
@@ -171,6 +231,7 @@ async def sandbox_test(
         bad_contact: list[str] = []
         broken_internal: list[str] = []
         overflowing: list[str] = []
+        desktop_faults: list[str] = []
         css_statuses: list[int | None] = []
 
         async with async_playwright() as pw:
@@ -196,6 +257,7 @@ async def sandbox_test(
             bad_contact += result["bad_contact"]
             broken_internal += result["broken_internal"]
             overflowing += result["overflowing"]
+            desktop_faults += result["desktop_faults"]
             css_statuses.append(result["css_status"])
 
         css_status = next((s for s in css_statuses if s is not None), None)
@@ -226,6 +288,12 @@ async def sandbox_test(
         # other one would pass a site that scrolls sideways on every phone.
         checks.append(
             {"name": "fits_every_screen", "passed": not overflowing, "detail": overflowing}
+        )
+        # Fitting the screen and being laid out for it are different questions, and the
+        # check above only answers the first. A site can fit a 1920 monitor perfectly and
+        # still show a 1116px button, because nothing is overflowing -- it is just wrong.
+        checks.append(
+            {"name": "works_on_desktop", "passed": not desktop_faults, "detail": desktop_faults}
         )
 
         # Source-level, not DOM-level: Chromium repairs malformed markup before the DOM
@@ -332,6 +400,7 @@ async def _check_page(browser, base_url: str, page_name: str, files: dict[str, s
         "failed_loads": [], "console_errors": [], "page_errors": [],
         "thin_pages": [], "broken_images": [], "bad_contact": [], "broken_internal": [],
         "overflowing": [],
+        "desktop_faults": [],
     }
     out["css_status"] = None  # type: ignore[assignment]
 
@@ -398,6 +467,7 @@ async def _check_page(browser, base_url: str, page_name: str, files: dict[str, s
             out["broken_internal"].append(f"{page_name} -> {href!r}")
 
     out["overflowing"] += await _overflow_at_each_width(page, page_name)
+    out["desktop_faults"] += await _desktop_faults(page, page_name)
 
     await page.close()
     return out
@@ -436,6 +506,50 @@ async def _overflow_at_each_width(page, page_name: str) -> list[str]:
                 f"-- {culprit}"
             )
     # Put it back, so the screenshot the owner is sent is the size it was always taken at.
+    await page.set_viewport_size({"width": SHOT_WIDTH, "height": SHOT_HEIGHT})
+    return found
+
+
+async def _desktop_faults(page, page_name: str) -> list[str]:
+    """Layout that is only wrong once the screen is wide.
+
+    The sweep above asks one question -- does the page scroll sideways -- and a site can be
+    plainly broken on a monitor while answering no. Both faults below did exactly that on a
+    live site: a "Book a demo" button 1116px wide, and a call-to-action band that stopped
+    370px short of each edge while every other band ran the full 1920. Nine checks passed.
+
+    They share a cause. A stylesheet whose largest media query is `max-width: 1024px` has
+    no rule that applies to a monitor at all, so the desktop layout is whatever the mobile
+    reasoning left behind -- and on a phone, a full-width button and a band as wide as the
+    screen are both exactly right. The fault is not in the rule, it is in its absence.
+
+    Only faults with no design judgement in them are reported, on the same principle as the
+    overflow check: failing a build costs a repair pass, so a check that fires on a page
+    somebody meant to look that way is worse than no check. "This section leaves half the
+    column empty" is a real complaint and is deliberately not here -- a left-aligned hero
+    over a photograph measures identically and is a perfectly good design.
+    """
+    found: list[str] = []
+    limits = {"control": CONTROL_MAX_PX, "band": BAND_MIN_FRACTION}
+    for width, label in DESKTOP_WIDTHS:
+        try:
+            await page.set_viewport_size({"width": width, "height": 900})
+            result = await page.evaluate(DESKTOP_PROBE, limits)
+        except Exception:
+            logger.warning("could not measure %s at %dpx", page_name, width, exc_info=True)
+            continue
+        # Prefixed with style.css for the same reason as the overflow check: a width is set
+        # in the stylesheet, and `files_needing_repair` routes by the leading filename.
+        for fault in result["stretched"]:
+            found.append(
+                f"style.css: on {label} ({width}px) {page_name} {fault} -- a button or badge "
+                f"should be as wide as its text, not as wide as the column"
+            )
+        for fault in result["short"]:
+            found.append(
+                f"style.css: on {label} ({width}px) {page_name} {fault} -- a full-width band "
+                f"must reach both screen edges, with a .container inside holding its content"
+            )
     await page.set_viewport_size({"width": SHOT_WIDTH, "height": SHOT_HEIGHT})
     return found
 

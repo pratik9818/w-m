@@ -29,6 +29,7 @@ column.
 import logging
 import re
 
+from bot_api.services.form_data import submission_counts
 from bot_api.services.llm_client import LLMCallFailed, call_plain_completion
 from bot_api.services.session import render_edit_context
 from worker.codegen.quota import AVG_EDIT_COST, get_quota_summary
@@ -48,6 +49,9 @@ async def owner_facts(session, telegram_user_id: int, businesses: list, active_i
     the two can never disagree with each other.
     """
     quota = await get_quota_summary(session, telegram_user_id)
+    # One grouped query. "Is my site working?" is really "has anybody got in touch?", and
+    # an answer composed without this number is composed without the thing they meant.
+    enquiries = await submission_counts(session, [business.id for business in businesses])
     return {
         "sites": [
             {
@@ -55,6 +59,8 @@ async def owner_facts(session, telegram_user_id: int, businesses: list, active_i
                 "url": business.deployment_url,
                 "status": business.generation_status,
                 "layout": business.layout,
+                "has_form": bool(getattr(business, "forms", None)),
+                "enquiries": enquiries.get(business.id, 0),
                 "is_active": active_id is not None and business.id == active_id,
             }
             for business in businesses
@@ -84,9 +90,18 @@ def render_facts(facts: dict) -> str:
             active = " (this is the one they are currently editing)" if site["is_active"] else ""
             shape = "one-page landing site" if site["layout"] == "landing" else "four-page site"
             address = site["url"] or "no address yet -- it has not finished building"
+            # Said in full because the two halves mean different things and the model
+            # must not blur them: a site with no form has nothing to report, and a site
+            # with a form and no enquiries has something real and disappointing to report.
+            if not site["has_form"]:
+                enquiries = "no enquiry form on it yet"
+            elif site["enquiries"]:
+                enquiries = f"{site['enquiries']} enquiries received through its form"
+            else:
+                enquiries = "has an enquiry form, nobody has used it yet"
             lines.append(
                 f'- "{site["name"]}": a {shape}, status "{site["status"]}", '
-                f"address: {address}{active}"
+                f"address: {address}, {enquiries}{active}"
             )
     lines.append(
         f"\nTheir allowance: {facts['tokens_used']:,} of {facts['tokens_limit']:,} used, "

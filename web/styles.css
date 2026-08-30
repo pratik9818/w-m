@@ -1,0 +1,116 @@
+/* The customer-facing look, in one file.
+ *
+ * Deep pine on a warm neutral. The constraint that drove it: this page is rendered
+ * immediately before a bank's own UPI screen, and it has to survive that comparison
+ * without looking like a phishing page -- which rules out the bright gradients every
+ * checkout template ships with.
+ *
+ * Written for somebody standing in their shop with a phone. One screen, one price, one
+ * button, the amount repeated on the button itself so nobody taps it wondering what they
+ * are about to be charged.
+ *
+ * bot_api/web/pages.py carries its own copy of these rules for the server-rendered
+ * fallback pages. They are deliberately separate files: this one ships to a different
+ * host, and coupling a served page to a folder deployed elsewhere is worse than two
+ * clearly-labelled copies. Change the palette here and change it there.
+ */
+:root {
+  --ink: #101B1C; --ink-soft: #47585A; --ink-faint: #7A8B8C;
+  --paper: #F2F4F3; --card: #FFFFFF; --rule: #DDE4E3;
+  --accent: #1F5F5B; --accent-deep: #143F3C; --accent-wash: #E4EFED;
+  --good: #2C6E4F; --bad: #9C3628;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--paper); color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  line-height: 1.55; -webkit-font-smoothing: antialiased;
+  display: flex; justify-content: center; padding: 24px 16px 48px;
+}
+.wrap { width: 100%; max-width: 420px; }
+.brand {
+  display: flex; align-items: center; gap: 8px;
+  font-size: .78rem; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--ink-faint); margin-bottom: 14px;
+}
+.brand .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+.card {
+  background: var(--card); border: 1px solid var(--rule); border-radius: 12px;
+  overflow: hidden; box-shadow: 0 1px 2px rgba(16,27,28,.04), 0 12px 28px -18px rgba(16,27,28,.3);
+}
+.head { background: var(--accent-deep); color: #EEF5F4; padding: 24px 22px 22px; }
+.head .plan { font-size: .76rem; letter-spacing: .13em; text-transform: uppercase; opacity: .8; }
+.head .price {
+  font-size: 2.6rem; font-weight: 600; letter-spacing: -.02em; line-height: 1.1; margin-top: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.head .price .per { font-size: .95rem; font-weight: 400; opacity: .78; letter-spacing: 0; }
+.head .blurb { font-size: .92rem; opacity: .85; margin-top: 6px; }
+.body { padding: 22px; }
+ul.perks { list-style: none; margin: 0 0 22px; padding: 0; display: grid; gap: 10px; }
+ul.perks li { display: grid; grid-template-columns: 18px 1fr; gap: 10px; font-size: .95rem; align-items: start; }
+ul.perks li .tick { color: var(--accent); font-weight: 700; }
+button.pay {
+  width: 100%; border: 0; border-radius: 9px; cursor: pointer;
+  background: var(--accent); color: #fff;
+  font-size: 1.06rem; font-weight: 600; font-family: inherit;
+  padding: 15px 18px; letter-spacing: .01em;
+  transition: background .15s ease;
+}
+button.pay:hover { background: var(--accent-deep); }
+button.pay:disabled { background: var(--ink-faint); cursor: default; }
+button.pay:focus-visible { outline: 3px solid var(--accent-wash); outline-offset: 2px; }
+.methods { margin-top: 14px; text-align: center; font-size: .82rem; color: var(--ink-faint); }
+.methods strong { color: var(--ink-soft); font-weight: 600; }
+.note {
+  margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--rule);
+  font-size: .84rem; color: var(--ink-faint);
+}
+.msg { margin-top: 14px; padding: 12px 14px; border-radius: 8px; font-size: .9rem; display: none; }
+.msg.show { display: block; }
+.msg.bad { background: #F7E6E3; color: var(--bad); }
+.msg.info { background: var(--accent-wash); color: var(--accent-deep); }
+.result { text-align: center; padding: 40px 22px; }
+.result .mark {
+  width: 62px; height: 62px; border-radius: 50%; margin: 0 auto 18px;
+  display: grid; place-items: center; font-size: 1.9rem; color: #fff;
+}
+.result .mark.ok { background: var(--good); }
+.result .mark.bad { background: var(--bad); }
+.result h1 { font-size: 1.45rem; margin: 0 0 8px; letter-spacing: -.01em; }
+.result p { margin: 0 0 8px; color: var(--ink-soft); font-size: .96rem; }
+a.back {
+  display: inline-block; margin-top: 20px; padding: 13px 26px; border-radius: 9px;
+  background: var(--accent); color: #fff; text-decoration: none; font-weight: 600; font-size: 1rem;
+}
+a.back:hover { background: var(--accent-deep); }
+
+/* The static site has one state the server-rendered page never had: the moment before the
+ * plan details have arrived over the network. Showing a shaped placeholder rather than an
+ * empty screen matters here, because a blank page on a phone reads as "broken" and the
+ * customer closes the tab. */
+.skeleton .bar {
+  background: linear-gradient(90deg, var(--rule) 25%, var(--paper) 37%, var(--rule) 63%);
+  background-size: 400% 100%; animation: shimmer 1.4s ease infinite;
+  border-radius: 5px; height: 13px;
+}
+.skeleton .head .bar { background: rgba(255,255,255,.16); animation: none; }
+.skeleton .bar.tall { height: 34px; }
+.skeleton .bar + .bar { margin-top: 11px; }
+.skeleton .bar.short { width: 45%; }
+.skeleton .bar.mid { width: 70%; }
+@keyframes shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
+@media (prefers-reduced-motion: reduce) { .skeleton .bar { animation: none; } }
+[hidden] { display: none !important; }
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #E5EBEA; --ink-soft: #AEBEBC; --ink-faint: #7E908E;
+    --paper: #0C1415; --card: #131E1F; --rule: #27383A;
+    --accent: #3E9187; --accent-deep: #16302E; --accent-wash: #16302E;
+    --good: #3F8F65; --bad: #C4574A;
+  }
+  .head { background: #16302E; }
+  .msg.bad { background: #33201D; }
+}

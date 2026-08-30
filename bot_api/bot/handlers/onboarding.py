@@ -19,7 +19,9 @@ from aiogram.types import Message
 
 from bot_api.bot.filters import has_text, is_affirmation
 from bot_api.bot.states.onboarding import OnboardingStates
+from bot_api.bot.handlers.billing import out_of_changes_keyboard
 from bot_api.services.business_service import OnboardingSpec, create_business_from_spec
+from bot_api.services.entitlements import QuotaBlocked, check_new_site_allowed
 from bot_api.services.onboarding_ai import BriefParseFailed, parse_business_brief
 from bot_api.services.llm_client import DailyLimitReached
 from bot_api.services.queue import enqueue_generation
@@ -222,6 +224,20 @@ async def on_confirm(message: Message, state: FSMContext) -> None:
 
     spec = _spec_from_operation(data["business_id"], op)
     async with session_scope() as session:
+        # Checked at the last possible moment rather than at /newsite: somebody who has
+        # just spent five minutes describing their business deserves to be told before the
+        # build starts, but an owner who is *about* to delete a site should not be blocked
+        # from starting the conversation at all.
+        try:
+            await check_new_site_allowed(session, message.from_user.id)
+        except QuotaBlocked as blocked:
+            await state.clear()
+            await message.answer(
+                blocked.owner_message,
+                reply_markup=out_of_changes_keyboard() if blocked.offer_upgrade else None,
+            )
+            return
+
         business = await create_business_from_spec(session, message.from_user.id, spec)
 
     await set_active_business(get_redis(), message.from_user.id, business.id)

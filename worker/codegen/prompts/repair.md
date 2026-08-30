@@ -15,7 +15,13 @@ $problems
 4. **Never invent information to fill a gap.** If a contact link is empty because the
    business has no phone or email on record, delete that link and its label entirely —
    do not put in a placeholder, an example value, or a made-up address.
-5. No JavaScript: no `script` elements, no inline event handlers, no `form` elements.
+5. **Never delete a `<script>` block or a `<form>` to make a problem go away**, and never
+   add one of either. Both are working parts of this page: scripts are allowed here (see
+   the fixes below), and the form is built and wired up outside this call — anything
+   between `<!-- form:... -->` and `<!-- /form:... -->`, and the block marked
+   `<!-- form-script -->`, is machine-managed and must come back byte-for-byte identical.
+   Removing the script that sends the form leaves a form that looks perfect and loses
+   every message a customer types into it.
 6. Keep every existing class name, including ones that look unused — the stylesheet and
    the other pages depend on them.
 

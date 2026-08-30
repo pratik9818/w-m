@@ -34,6 +34,7 @@ from datetime import date, datetime, timedelta, timezone
 import httpx
 
 from bot_api.config import get_settings
+from bot_api.services.instructions import looks_like_an_instruction
 
 logger = logging.getLogger(__name__)
 
@@ -94,17 +95,15 @@ _PLACE_WORDS = re.compile(
     re.IGNORECASE,
 )
 
-# "add a visitor counter to my page" and "make the views bigger" are edits that happen to
-# contain traffic words. Requiring the message not to be an instruction keeps them out.
-_INSTRUCTION_RE = re.compile(
-    r"^\s*(?:add|put|make|change|remove|delete|set|move|create|show me a|give me a|"
-    r"insert|replace|update|write)\b",
+# "desktop view", "mobile view" -- a screen size, not a page view. Cut out before the
+# traffic words are looked for, because every request to fix a phone layout contains one.
+# This is not hypothetical: "Center form in desktop view and please make text color black"
+# was answered with visitor figures, three times, on the strength of that one word.
+_LAYOUT_VIEW_RE = re.compile(
+    r"\b(?:desktop|mobile|tablet|phone|laptop|grid|list|card|split|print)\s+views?\b"
+    r"|\bviews?\s+(?:on|in|for)\s+(?:desktop|mobile|tablet|phones?|laptop)\b",
     re.IGNORECASE,
 )
-
-
-def _looks_like_an_instruction(text: str) -> bool:
-    return bool(_INSTRUCTION_RE.match(text)) and not text.rstrip().endswith("?")
 
 
 def looks_like_a_traffic_question(text: str) -> bool:
@@ -112,10 +111,15 @@ def looks_like_a_traffic_question(text: str) -> bool:
 
     Checked before the edit pipeline reads the message with a model, so a question about
     visitors never costs anything and is never mistaken for a request to change the site.
+
+    The instruction check comes first and is deliberately eager: see
+    bot_api/services/instructions.py for why an edit landing here is far worse than a
+    question landing in the edit pipeline.
     """
     body = (text or "").strip()
-    if not body or _looks_like_an_instruction(body):
+    if not body or looks_like_an_instruction(body):
         return False
+    body = _LAYOUT_VIEW_RE.sub(" ", body)
     return bool(
         _TRAFFIC_WORDS.search(body)
         or _SOURCE_WORDS.search(body)

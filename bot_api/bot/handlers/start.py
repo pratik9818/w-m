@@ -16,7 +16,9 @@ HELP_TEXT = (
     "/mysites — see and switch between your sites\n"
     "/status — check whether your site is live, building, or had a problem\n"
     "/traffic — see how many people visited and where they found you\n"
-    "/token — see how many more websites and changes you can make\n"
+    "/data — see the enquiries customers sent through your site\n"
+    "/plan — see your plan, and how many changes you have left this month\n"
+    "/upgrade — get more websites and more changes\n"
     "/undo — put your site back to how it was before the last change\n"
     "/delete — permanently delete a site and take it offline\n"
     "/cancel — cancel whatever you're in the middle of\n\n"
@@ -25,6 +27,9 @@ HELP_TEXT = (
     "of your site stays exactly as it is.\n\n"
     "You can ask me about your visitors the same way — \"how many visits today?\", "
     "\"did anyone look at it yesterday?\", \"where are these people coming from?\"\n\n"
+    "✉️ Say \"add a contact form\" and people can message you straight from your site. "
+    "Every message lands here the moment it's sent, and \"give me my site data\" shows "
+    "you all of them whenever you want.\n\n"
     "📷 You can also send me a photo any time and I'll ask where you'd like it on your site."
 )
 

@@ -12,6 +12,7 @@ from aiogram.types import Message
 from sqlalchemy import select
 
 from bot_api.services.analytics import not_counting_yet, traffic_reply
+from bot_api.services.form_data import submissions_reply
 from bot_api.services.business_service import get_business_by_id, list_businesses_for_owner
 from bot_api.services.edit_ops import is_build_stale, is_business_busy
 from bot_api.services.redis_client import get_redis
@@ -160,6 +161,27 @@ async def cmd_traffic(message: Message) -> None:
 
     period = (message.text or "").partition(" ")[2].strip()
     reply = await traffic_reply(business, period, full_report=True)
+    await message.answer(reply)
+
+
+@router.message(Command("data"))
+async def cmd_data(message: Message) -> None:
+    """Every enquiry sent through the active site's form.
+
+    Thin for the same reason /traffic is: owners ask "give me my site data" in the chat and
+    the edit handler answers it with this same module. Any text after the command is
+    treated as the period, so "/data last week" works the way the sentence does.
+    """
+    business = await _resolve_active(message.from_user.id)
+    if business is None:
+        await message.answer(
+            "Which site's enquiries did you want? Use /mysites to pick one first."
+        )
+        return
+
+    period = (message.text or "").partition(" ")[2].strip()
+    async with session_scope() as session:
+        reply = await submissions_reply(session, business, period, full_report=True)
     await message.answer(reply)
 
 

@@ -92,9 +92,12 @@ You have a real browser to work with. Use it.
   question in `<summary class="faq-question">` and the answer in a
   `<div class="faq-answer">`), `scroll-behavior: smooth`, CSS scroll-snap for swipeable
   rows. Reach for these before writing script — they cannot break.
-- Still no `<form>` elements: there is no server to receive a submission, so a contact
-  form silently loses every message a customer sends. Drive contact through `tel:`,
-  `mailto:` and links.
+- **Never write a `<form>` element.** This site can have a real, working enquiry form —
+  but it is built and wired up outside this call and added to the page afterwards,
+  together with the code that actually sends a submission. A form you write here would
+  render perfectly and post nowhere, so every message a customer typed into it would be
+  lost with nothing anywhere to show it existed. Drive contact through `tel:`, `mailto:`
+  and links, and leave the form to the part of the system that can make it send.
 
 ### Head assets (CDN libraries, icon packs, extra stylesheets)
 

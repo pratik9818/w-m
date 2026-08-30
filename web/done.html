@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Payment received</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="brand"><span class="dot"></span><span>Secure payment</span></div>
+  <div class="card">
+    <div class="result">
+      <div class="mark ok">&#10003;</div>
+      <h1>Payment received</h1>
+      <!-- Deliberately not "your plan is active". The plan is granted by Razorpay's
+           webhook, not by this page, and claiming it here would be a promise this page
+           has no way to keep. -->
+      <p id="detail">Go back to the chat &mdash; a confirmation is waiting there, usually within a few seconds.</p>
+      <a class="back" id="back" href="#" hidden>Back to the chat</a>
+    </div>
+  </div>
+</div>
+<script src="/config.js"></script>
+<script>
+(function () {
+  var cfg = window.CHECKOUT || {};
+  var params = new URLSearchParams(window.location.search);
+  var plan = params.get("plan");
+  if (plan) {
+    document.getElementById("detail").textContent =
+      "You're on " + plan + ". Go back to the chat — a confirmation is waiting there, " +
+      "usually within a few seconds.";
+  }
+  if (cfg.botUsername) {
+    var back = document.getElementById("back");
+    back.href = "https://t.me/" + encodeURIComponent(cfg.botUsername);
+    back.hidden = false;
+  }
+})();
+</script>
+</body>
+</html>

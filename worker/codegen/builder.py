@@ -215,7 +215,8 @@ PAGE_REQUIREMENTS = {
         "never invent or leave an empty link.\n"
         "  - The opening hours, exactly as written in the data, only if real hours are given.\n"
         "  - A section on what to expect when getting in touch and how the business responds.\n"
-        "  - A closing `cta-band`. Remember there is no working form — contact links only."
+        "  - A closing `cta-band`. Contact links only — never write a form here, even "
+        "though this site can have one: it is added afterwards, wired to send."
     ),
 }
 

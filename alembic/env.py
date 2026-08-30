@@ -18,6 +18,13 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 database_url = os.environ.get("DATABASE_URL")
+if not database_url:
+    # Fall back to the app's own settings, which read .env. Alembic is normally run by
+    # hand from a shell that has never exported DATABASE_URL, and without this the
+    # failure is a bare `KeyError: 'url'` that says nothing about the missing variable.
+    from bot_api.config import get_settings
+
+    database_url = get_settings().database_url
 if database_url:
     config.set_main_option("sqlalchemy.url", database_url)
 
